@@ -1,0 +1,74 @@
+name: Collect Market Data
+
+on:
+  schedule:
+    # 한국 마감 (15:30 KST = 06:30 UTC)
+    - cron: '0 7 * * 1-5'
+    # 도쿄 마감 (15:00 JST = 06:00 UTC)
+    - cron: '30 6 * * 1-5'
+    # 상하이 마감 (15:00 CST = 07:00 UTC)
+    - cron: '30 7 * * 1-5'
+    # 베트남/홍콩 마감 (~08:00 UTC)
+    - cron: '30 8 * * 1-5'
+    # 인도 마감 (15:30 IST = 10:00 UTC)
+    - cron: '0 10 * * 1-5'
+    # 독일 마감 (17:30 CET = 16:30 UTC)
+    - cron: '0 17 * * 1-5'
+    # 미국 마감 (16:00 ET = 21:00 UTC)
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      market:
+        description: '시장 코드 (KR, US, CN, JP, VN, IN, DE, ALL)'
+        required: true
+        default: 'KR'
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine market from schedule
+        id: market
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "market=${{ github.event.inputs.market }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            case $HOUR in
+              06) echo "market=JP" >> $GITHUB_OUTPUT ;;
+              07) echo "market=KR,CN" >> $GITHUB_OUTPUT ;;
+              08) echo "market=VN" >> $GITHUB_OUTPUT ;;
+              10) echo "market=IN" >> $GITHUB_OUTPUT ;;
+              17) echo "market=DE" >> $GITHUB_OUTPUT ;;
+              21) echo "market=US" >> $GITHUB_OUTPUT ;;
+              *) echo "market=BENCHMARK" >> $GITHUB_OUTPUT ;;
+            esac
+          fi
+
+      - name: Collect market data
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+        run: python -m scripts.collect --market ${{ steps.market.outputs.market }}
+
+      - name: Collect benchmarks
+        if: steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL'
+        run: python -m scripts.collect --market BENCHMARK
+
+      - name: Commit database
+        run: |
+          git config user.name "MarketBot"
+          git config user.email "marketbot@github.com"
+          git add data/marketbot.db
+          git diff --cached --quiet || git commit -m "data: ${{ steps.market.outputs.market }} $(date -u +%Y-%m-%d)"
+          git push

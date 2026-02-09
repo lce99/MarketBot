@@ -1,0 +1,9 @@
+pykrx>=1.0.45
+tushare>=1.4.0
+vnstock>=0.3.0
+finnhub-python>=2.4.0
+yfinance>=0.2.30
+python-telegram-bot>=20.0
+pandas>=2.0.0
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
