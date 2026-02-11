@@ -246,18 +246,3 @@ class FinnhubCollector(BaseCollector):
 class USCollector(FinnhubCollector):
     def __init__(self):
         super().__init__("US")
-
-
-class JPCollector(FinnhubCollector):
-    def __init__(self):
-        super().__init__("JP")
-
-
-class DECollector(FinnhubCollector):
-    def __init__(self):
-        super().__init__("DE")
-
-
-class INCollector(FinnhubCollector):
-    def __init__(self):
-        super().__init__("IN")

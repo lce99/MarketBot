@@ -35,13 +35,13 @@ def get_collector(market: str):
         from src.collectors.finnhub_collector import USCollector
         return USCollector()
     elif market == "JP":
-        from src.collectors.finnhub_collector import JPCollector
+        from src.collectors.yfinance_collector import JPCollector
         return JPCollector()
     elif market == "DE":
-        from src.collectors.finnhub_collector import DECollector
+        from src.collectors.yfinance_collector import DECollector
         return DECollector()
     elif market == "IN":
-        from src.collectors.finnhub_collector import INCollector
+        from src.collectors.yfinance_collector import INCollector
         return INCollector()
     elif market == "CN":
         from src.collectors.china import ChinaCollector
