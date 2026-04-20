@@ -1,0 +1,92 @@
+{
+  "listing": [
+    {
+      "ticker": "VCB",
+      "name": "Vietcombank",
+      "industry": "Banks",
+      "market_cap": 500000000000
+    },
+    {
+      "ticker": "FPT",
+      "name": "FPT Corp",
+      "industry": "Technology",
+      "market_cap": 300000000000
+    }
+  ],
+  "histories": {
+    "VCB": [
+      {
+        "time": "2026-04-13",
+        "close": 80.0,
+        "volume": 1000000
+      },
+      {
+        "time": "2026-04-14",
+        "close": 81.0,
+        "volume": 1100000
+      },
+      {
+        "time": "2026-04-15",
+        "close": 82.0,
+        "volume": 1200000
+      },
+      {
+        "time": "2026-04-16",
+        "close": 83.0,
+        "volume": 1300000
+      },
+      {
+        "time": "2026-04-17",
+        "close": 84.0,
+        "volume": 1400000
+      },
+      {
+        "time": "2026-04-20",
+        "close": 85.0,
+        "volume": 1500000
+      },
+      {
+        "time": "2026-04-21",
+        "close": 86.0,
+        "volume": 1600000
+      }
+    ],
+    "FPT": [
+      {
+        "time": "2026-04-13",
+        "close": 100.0,
+        "volume": 2000000
+      },
+      {
+        "time": "2026-04-14",
+        "close": 101.0,
+        "volume": 2100000
+      },
+      {
+        "time": "2026-04-15",
+        "close": 102.0,
+        "volume": 2200000
+      },
+      {
+        "time": "2026-04-16",
+        "close": 103.0,
+        "volume": 2300000
+      },
+      {
+        "time": "2026-04-17",
+        "close": 104.0,
+        "volume": 2400000
+      },
+      {
+        "time": "2026-04-20",
+        "close": 110.0,
+        "volume": 2500000
+      },
+      {
+        "time": "2026-04-21",
+        "close": 111.0,
+        "volume": 2600000
+      }
+    ]
+  }
+}

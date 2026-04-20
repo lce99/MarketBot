@@ -163,6 +163,7 @@ python -m unittest discover -s tests -v
 - `scripts.collect` CLI 종료 코드
 - `scripts.report` 파생 데이터 계산
 - `src.reporter` 리포트 포맷
+- `tests/fixtures/collector_contracts/` 기반 collector contract test
 - 운영 상태 모니터링
 - summary/raw 저장 전략 마이그레이션
 

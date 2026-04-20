@@ -1,0 +1,88 @@
+{
+  "prices": [
+    {
+      "ticker": "6758.T",
+      "date": "2026-04-13",
+      "close": 10000.0,
+      "volume": 1000000
+    },
+    {
+      "ticker": "6758.T",
+      "date": "2026-04-14",
+      "close": 10200.0,
+      "volume": 1100000
+    },
+    {
+      "ticker": "6758.T",
+      "date": "2026-04-15",
+      "close": 10400.0,
+      "volume": 1200000
+    },
+    {
+      "ticker": "6758.T",
+      "date": "2026-04-16",
+      "close": 10600.0,
+      "volume": 1300000
+    },
+    {
+      "ticker": "6758.T",
+      "date": "2026-04-17",
+      "close": 10800.0,
+      "volume": 1400000
+    },
+    {
+      "ticker": "6758.T",
+      "date": "2026-04-20",
+      "close": 11000.0,
+      "volume": 1500000
+    },
+    {
+      "ticker": "8306.T",
+      "date": "2026-04-13",
+      "close": 1000.0,
+      "volume": 500000
+    },
+    {
+      "ticker": "8306.T",
+      "date": "2026-04-14",
+      "close": 1010.0,
+      "volume": 520000
+    },
+    {
+      "ticker": "8306.T",
+      "date": "2026-04-15",
+      "close": 1020.0,
+      "volume": 540000
+    },
+    {
+      "ticker": "8306.T",
+      "date": "2026-04-16",
+      "close": 1030.0,
+      "volume": 560000
+    },
+    {
+      "ticker": "8306.T",
+      "date": "2026-04-17",
+      "close": 1040.0,
+      "volume": 580000
+    },
+    {
+      "ticker": "8306.T",
+      "date": "2026-04-20",
+      "close": 1050.0,
+      "volume": 600000
+    }
+  ],
+  "info": {
+    "6758.T": {
+      "sector": "Technology",
+      "marketCap": 15000000000000,
+      "shortName": "Sony Group Corp."
+    },
+    "8306.T": {
+      "sector": "Financial Services",
+      "marketCap": 12000000000000,
+      "shortName": "Mitsubishi UFJ Financial"
+    }
+  }
+}

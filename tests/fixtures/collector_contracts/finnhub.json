@@ -1,0 +1,90 @@
+{
+  "symbols": [
+    {
+      "symbol": "AAPL",
+      "description": "Apple Inc.",
+      "type": "Common Stock",
+      "type2": "Technology"
+    },
+    {
+      "symbol": "JPM",
+      "description": "JPMorgan Chase & Co.",
+      "type": "Common Stock",
+      "type2": "Financial Services"
+    }
+  ],
+  "prices": [
+    {
+      "ticker": "AAPL",
+      "date": "2026-04-13",
+      "close": 180.0,
+      "volume": 90000000
+    },
+    {
+      "ticker": "AAPL",
+      "date": "2026-04-14",
+      "close": 185.0,
+      "volume": 92000000
+    },
+    {
+      "ticker": "AAPL",
+      "date": "2026-04-15",
+      "close": 190.0,
+      "volume": 95000000
+    },
+    {
+      "ticker": "AAPL",
+      "date": "2026-04-16",
+      "close": 195.0,
+      "volume": 97000000
+    },
+    {
+      "ticker": "AAPL",
+      "date": "2026-04-17",
+      "close": 200.0,
+      "volume": 100000000
+    },
+    {
+      "ticker": "AAPL",
+      "date": "2026-04-20",
+      "close": 210.0,
+      "volume": 110000000
+    },
+    {
+      "ticker": "JPM",
+      "date": "2026-04-13",
+      "close": 100.0,
+      "volume": 50000000
+    },
+    {
+      "ticker": "JPM",
+      "date": "2026-04-14",
+      "close": 101.0,
+      "volume": 51000000
+    },
+    {
+      "ticker": "JPM",
+      "date": "2026-04-15",
+      "close": 102.0,
+      "volume": 52000000
+    },
+    {
+      "ticker": "JPM",
+      "date": "2026-04-16",
+      "close": 103.0,
+      "volume": 53000000
+    },
+    {
+      "ticker": "JPM",
+      "date": "2026-04-17",
+      "close": 104.0,
+      "volume": 54000000
+    },
+    {
+      "ticker": "JPM",
+      "date": "2026-04-20",
+      "close": 105.0,
+      "volume": 55000000
+    }
+  ]
+}

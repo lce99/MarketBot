@@ -1,0 +1,54 @@
+{
+  "daily_by_trade_date": {
+    "20260420": [
+      {
+        "ts_code": "000001.SZ",
+        "close": 120.0,
+        "pct_chg": 5.0,
+        "vol": 1500000
+      },
+      {
+        "ts_code": "002475.SZ",
+        "close": 55.0,
+        "pct_chg": -1.5,
+        "vol": 900000
+      }
+    ],
+    "20260414": [
+      {
+        "ts_code": "000001.SZ",
+        "close": 100.0,
+        "pct_chg": 0.0,
+        "vol": 1300000
+      },
+      {
+        "ts_code": "002475.SZ",
+        "close": 50.0,
+        "pct_chg": 0.2,
+        "vol": 850000
+      }
+    ]
+  },
+  "stock_basic": [
+    {
+      "ts_code": "000001.SZ",
+      "name": "平安银行",
+      "industry": "银行"
+    },
+    {
+      "ts_code": "002475.SZ",
+      "name": "立讯精密",
+      "industry": "电子"
+    }
+  ],
+  "daily_basic": [
+    {
+      "ts_code": "000001.SZ",
+      "total_mv": 1500000
+    },
+    {
+      "ts_code": "002475.SZ",
+      "total_mv": 900000
+    }
+  ]
+}
