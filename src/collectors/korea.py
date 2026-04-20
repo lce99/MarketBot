@@ -7,6 +7,7 @@ import pandas as pd
 from pykrx import stock as krx
 
 from src.collectors.base import BaseCollector
+from src.collectors.date_utils import recent_dates
 from src.config import KR_SECTOR_MAP
 
 logger = logging.getLogger(__name__)
@@ -47,20 +48,43 @@ class KoreaCollector(BaseCollector):
 
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
         """KOSPI + KOSDAQ 전종목 일간 데이터 수집."""
-        date_fmt = date.replace("-", "")
+        for date_fmt in self._candidate_trading_dates(date):
+            all_data = []
+            for market in ["KOSPI", "KOSDAQ"]:
+                df = self._fetch_market(date_fmt, market)
+                if df is not None and not df.empty:
+                    all_data.append(df)
 
-        all_data = []
-        for market in ["KOSPI", "KOSDAQ"]:
-            df = self._fetch_market(date_fmt, market)
-            if df is not None and not df.empty:
-                all_data.append(df)
+            if not all_data:
+                continue
 
-        if not all_data:
-            return pd.DataFrame()
+            result = pd.concat(all_data, ignore_index=True)
+            self.effective_date = (
+                f"{date_fmt[:4]}-{date_fmt[4:6]}-{date_fmt[6:8]}"
+            )
+            logger.info(f"[KR] 전체: {len(result)}개 종목")
+            return result
 
-        result = pd.concat(all_data, ignore_index=True)
-        logger.info(f"[KR] 전체: {len(result)}개 종목")
-        return result
+        logger.warning(f"[KR] 최근 7일 내 사용 가능한 데이터 없음 ({date})")
+        return pd.DataFrame()
+
+    def _candidate_trading_dates(self, date: str) -> list[str]:
+        """요청일 기준 최근 거래일 후보를 중복 없이 반환."""
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        for raw_date in recent_dates(date, lookback_days=7):
+            compact = raw_date.replace("-", "")
+            try:
+                business_date = krx.get_nearest_business_day_in_a_week(compact)
+            except Exception:
+                business_date = compact
+
+            if business_date not in seen:
+                seen.add(business_date)
+                candidates.append(business_date)
+
+        return candidates
 
     def _fetch_market(self, date_fmt: str, market: str) -> pd.DataFrame | None:
         """특정 시장 전종목 데이터 수집."""

@@ -9,4 +9,6 @@ venv/
 .idea/
 .vscode/
 *.db-journal
+*.db-wal
+*.db-shm
 .claude/

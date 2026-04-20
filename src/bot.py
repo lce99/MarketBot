@@ -129,11 +129,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def send_auto_report(token: str, chat_id: str):
+async def send_auto_report(token: str, chat_id: str, date: str | None = None):
     """GitHub Actions에서 호출하여 자동 리포트 전송."""
     from telegram import Bot
     bot = Bot(token=token)
-    messages = format_daily_report()
+    messages = format_daily_report(date=date)
     for msg in messages:
         if msg.strip():
             await bot.send_message(chat_id=chat_id, text=msg)

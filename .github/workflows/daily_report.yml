@@ -9,6 +9,8 @@ on:
 jobs:
   report:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -20,8 +22,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Prepare report data
+        run: python -m scripts.report --prepare-only
+
+      - name: Checkpoint database
+        run: python -m scripts.checkpoint_db
+
+      - name: Commit report data
+        run: |
+          git config user.name "MarketBot"
+          git config user.email "marketbot@github.com"
+          git add data/marketbot.db
+          git diff --cached --quiet || git commit -m "report-data: $(date -u +%Y-%m-%d)"
+          git push
+
       - name: Send daily report
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m scripts.report
+        run: python -m scripts.report --skip-analyze

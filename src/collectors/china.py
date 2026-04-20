@@ -6,10 +6,12 @@ tushare 무료 토큰으로 사용 가능.
 
 import logging
 import time
+from datetime import datetime
 
 import pandas as pd
 
 from src.collectors.base import BaseCollector
+from src.collectors.date_utils import recent_dates
 from src.config import TUSHARE_TOKEN
 
 logger = logging.getLogger(__name__)
@@ -71,36 +73,48 @@ class ChinaCollector(BaseCollector):
         ts.set_token(TUSHARE_TOKEN)
         pro = ts.pro_api()
 
-        date_fmt = date.replace("-", "")  # "20260206"
-
         try:
-            # 1) 일간 데이터 (전종목)
-            df_daily = pro.daily(trade_date=date_fmt)
+            # 1) 일간 데이터 (전종목). 요청일 데이터가 아직 없을 수 있어 최근 날짜를 역탐색
+            trade_date, df_daily = self._fetch_recent_daily(pro, date)
             if df_daily is None or df_daily.empty:
-                logger.warning(f"[CN] 데이터 없음 ({date_fmt})")
+                logger.warning(f"[CN] 최근 7일 내 데이터 없음 ({date})")
                 return pd.DataFrame()
             time.sleep(1)
 
+            self.effective_date = datetime.strptime(
+                trade_date, "%Y%m%d"
+            ).strftime("%Y-%m-%d")
+
             # 2) 종목 기본정보 (이름, 업종)
-            df_basic = pro.stock_basic(
-                exchange="",
-                list_status="L",
-                fields="ts_code,name,industry,market,list_date"
-            )
-            time.sleep(1)
+            try:
+                df_basic = pro.stock_basic(
+                    exchange="",
+                    list_status="L",
+                    fields="ts_code,name,industry,market,list_date"
+                )
+                time.sleep(1)
+            except Exception as e:
+                logger.warning(f"[CN] stock_basic 조회 실패, 기본값으로 진행: {e}")
+                df_basic = pd.DataFrame()
 
             # 3) 일간 지표 (시총, PE 등)
-            df_indicator = pro.daily_basic(
-                trade_date=date_fmt,
-                fields="ts_code,close,turnover_rate,volume_ratio,total_mv,circ_mv"
-            )
-            time.sleep(1)
+            try:
+                df_indicator = pro.daily_basic(
+                    trade_date=trade_date,
+                    fields="ts_code,close,turnover_rate,volume_ratio,total_mv,circ_mv"
+                )
+                time.sleep(1)
+            except Exception as e:
+                logger.warning(f"[CN] daily_basic 조회 실패, 시총 없이 진행: {e}")
+                df_indicator = pd.DataFrame()
 
             # 조인
-            merged = df_daily.merge(
-                df_basic[["ts_code", "name", "industry"]],
-                on="ts_code", how="left"
-            )
+            merged = df_daily.copy()
+            if not df_basic.empty:
+                merged = merged.merge(
+                    df_basic[["ts_code", "name", "industry"]],
+                    on="ts_code", how="left"
+                )
             if df_indicator is not None and not df_indicator.empty:
                 merged = merged.merge(
                     df_indicator[["ts_code", "total_mv"]],
@@ -122,9 +136,13 @@ class ChinaCollector(BaseCollector):
                 if pd.notna(row.get("pct_chg")):
                     daily_return = float(row["pct_chg"])
 
+                name = row.get("name", "")
+                if pd.isna(name) or not name:
+                    name = row["ts_code"]
+
                 rows.append({
                     "ticker": row["ts_code"],
-                    "name": row.get("name", ""),
+                    "name": name,
                     "sector": sector,
                     "market_cap": market_cap,
                     "close_price": float(row["close"]) if pd.notna(row.get("close")) else None,
@@ -140,3 +158,21 @@ class ChinaCollector(BaseCollector):
         except Exception as e:
             logger.error(f"[CN] 수집 실패: {e}", exc_info=True)
             return pd.DataFrame()
+
+    def _fetch_recent_daily(self, pro, date: str) -> tuple[str | None, pd.DataFrame]:
+        """최근 며칠 내 실제로 데이터가 존재하는 거래일을 찾는다."""
+        for candidate in recent_dates(date, lookback_days=7):
+            candidate_fmt = candidate.replace("-", "")
+            try:
+                df_daily = pro.daily(trade_date=candidate_fmt)
+            except Exception as e:
+                logger.warning(f"[CN] {candidate_fmt} 일간 데이터 조회 실패: {e}")
+                time.sleep(1)
+                continue
+
+            if df_daily is not None and not df_daily.empty:
+                return candidate_fmt, df_daily
+
+            time.sleep(0.3)
+
+        return None, pd.DataFrame()

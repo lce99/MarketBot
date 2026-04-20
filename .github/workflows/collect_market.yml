@@ -43,22 +43,25 @@ jobs:
         id: market
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "market=${{ github.event.inputs.market }}" >> $GITHUB_OUTPUT
+            market="${{ github.event.inputs.market }}"
           else
-            HOUR=$(date -u +%H)
-            case $HOUR in
-              06) echo "market=JP" >> $GITHUB_OUTPUT ;;
-              07) echo "market=KR,CN" >> $GITHUB_OUTPUT ;;
-              08) echo "market=VN" >> $GITHUB_OUTPUT ;;
-              10) echo "market=IN" >> $GITHUB_OUTPUT ;;
-              17) echo "market=DE" >> $GITHUB_OUTPUT ;;
-              21) echo "market=US" >> $GITHUB_OUTPUT ;;
-              *) echo "market=BENCHMARK" >> $GITHUB_OUTPUT ;;
+            case "${{ github.event.schedule }}" in
+              '30 6 * * 1-5') market="JP" ;;
+              '0 7 * * 1-5') market="KR" ;;
+              '30 7 * * 1-5') market="CN" ;;
+              '30 8 * * 1-5') market="VN" ;;
+              '0 10 * * 1-5') market="IN" ;;
+              '0 17 * * 1-5') market="DE" ;;
+              '30 21 * * 1-5') market="US" ;;
+              *)
+                echo "Unsupported schedule: ${{ github.event.schedule }}" >&2
+                exit 1
+                ;;
             esac
           fi
+          echo "market=${market^^}" >> $GITHUB_OUTPUT
 
       - name: Collect market data
-        continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
@@ -67,6 +70,9 @@ jobs:
       - name: Collect benchmarks
         if: steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL'
         run: python -m scripts.collect --market BENCHMARK
+
+      - name: Checkpoint database
+        run: python -m scripts.checkpoint_db
 
       - name: Commit database
         run: |

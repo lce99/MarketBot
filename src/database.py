@@ -102,6 +102,16 @@ def init_db():
     conn.close()
 
 
+def checkpoint_db() -> None:
+    """WAL 내용을 메인 DB 파일에 강제로 반영한다."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+
+
 def upsert_stock_daily(conn: sqlite3.Connection, rows: list[dict]):
     """개별 종목 일간 데이터 UPSERT (bulk)"""
     conn.executemany("""

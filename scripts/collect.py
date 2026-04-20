@@ -74,20 +74,32 @@ def main():
     else:
         markets = [m.strip().upper() for m in args.market.split(",")]
 
+    failed_markets: list[str] = []
+
     for market in markets:
         try:
             if market == "BENCHMARK":
                 from src.collectors.benchmark import collect_benchmarks
-                collect_benchmarks(date)
-                logger.info("[BENCHMARK] 수집 성공")
+                saved_rows = collect_benchmarks(date)
+                logger.info(f"[BENCHMARK] 수집 성공 ({saved_rows}개)")
             else:
                 collector = get_collector(market)
-                collector.run(date=date)
+                success = collector.run(date=date)
+                if not success:
+                    failed_markets.append(market)
+                    logger.error(f"[{market}] 수집 실패: 데이터 없음")
+                    continue
                 logger.info(f"[{market}] 수집 성공")
         except ValueError as e:
-            logger.warning(str(e))
+            logger.error(str(e))
+            failed_markets.append(market)
         except Exception as e:
             logger.error(f"[{market}] 수집 실패: {e}", exc_info=True)
+            failed_markets.append(market)
+
+    if failed_markets:
+        failed_list = ", ".join(failed_markets)
+        raise SystemExit(f"수집 실패/데이터 없음 시장: {failed_list}")
 
 
 if __name__ == "__main__":

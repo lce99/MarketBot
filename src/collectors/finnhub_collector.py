@@ -11,7 +11,7 @@ Rate limit 관리를 위해 배치 처리 + sleep.
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import finnhub
 import pandas as pd
@@ -124,16 +124,14 @@ class FinnhubCollector(BaseCollector):
 
         yfinance.download()은 한번에 수백개 티커를 처리 가능.
         """
-        # 날짜 범위: 전일 ~ 당일 (등락률 계산용)
-        end_date = date
         # 시작일은 2일 전 (주말/휴일 고려)
-        from datetime import timedelta
         dt = datetime.strptime(date, "%Y-%m-%d")
         start_date = (dt - timedelta(days=5)).strftime("%Y-%m-%d")
 
         # 배치 크기: yfinance는 한번에 ~500개 처리 가능
         batch_size = 200
         all_rows = []
+        used_dates: set[str] = set()
 
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i + batch_size]
@@ -162,20 +160,31 @@ class FinnhubCollector(BaseCollector):
                                 continue
                             ticker_data = data[ticker]
 
-                        if ticker_data.empty:
+                        valid_data = ticker_data.dropna(subset=["Close"])
+                        if valid_data.empty:
                             continue
 
                         # 최신 날짜 데이터
-                        latest = ticker_data.iloc[-1]
+                        latest = valid_data.iloc[-1]
                         close_price = float(latest["Close"])
-                        volume = float(latest["Volume"])
+                        volume = (
+                            float(latest["Volume"])
+                            if pd.notna(latest["Volume"])
+                            else None
+                        )
+                        used_dates.add(valid_data.index[-1].strftime("%Y-%m-%d"))
 
                         # 등락률 계산
                         daily_return = None
-                        if len(ticker_data) >= 2:
-                            prev_close = float(ticker_data.iloc[-2]["Close"])
+                        if len(valid_data) >= 2:
+                            prev_close = float(valid_data.iloc[-2]["Close"])
                             if prev_close > 0:
                                 daily_return = ((close_price - prev_close) / prev_close) * 100
+
+                        avg_volume_20d = None
+                        valid_volume = ticker_data["Volume"].dropna().tail(20)
+                        if len(valid_volume) > 0:
+                            avg_volume_20d = float(valid_volume.mean())
 
                         # 섹터 정보 (Finnhub 데이터 기반)
                         info = sector_info.get(ticker, {})
@@ -190,7 +199,7 @@ class FinnhubCollector(BaseCollector):
                             "close_price": close_price,
                             "daily_return": daily_return,
                             "volume": volume,
-                            "avg_volume_20d": None,
+                            "avg_volume_20d": avg_volume_20d,
                         })
                     except Exception as e:
                         logger.debug(f"[{self.country_code}] {ticker} 처리 실패: {e}")
@@ -208,6 +217,8 @@ class FinnhubCollector(BaseCollector):
             time.sleep(1)  # yfinance 부하 방지
 
         df = pd.DataFrame(all_rows)
+        if used_dates:
+            self.effective_date = max(used_dates)
 
         # 시총이 없으면 Finnhub profile2로 보충 (상위 종목만, rate limit 고려)
         if not df.empty:

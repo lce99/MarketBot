@@ -5,6 +5,7 @@ vnstock은 무료, 무제한.
 
 import logging
 import time
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -66,6 +67,9 @@ class VietnamCollector(BaseCollector):
 
         try:
             stock = Vnstock()
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+            start_date = (target_date - timedelta(days=7)).strftime("%Y-%m-%d")
+            end_date = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
 
             # 1) 전종목 리스트
             listing = stock.stock().listing.all_symbols()
@@ -77,41 +81,60 @@ class VietnamCollector(BaseCollector):
 
             # 2) 각 종목의 일간 데이터 수집
             rows = []
+            used_dates: list[str] = []
             for _, info in listing.iterrows():
                 ticker = info.get("ticker") or info.get("symbol") or ""
                 if not ticker:
                     continue
 
                 try:
-                    # vnstock으로 최근 데이터 가져오기
+                    # vnstock으로 최근 며칠 데이터를 가져와 최신 거래일 봉을 선택
                     hist = stock.stock(symbol=ticker, source="VCI").quote.history(
-                        start=date, end=date
+                        start=start_date, end=end_date
                     )
-                    if hist is None or hist.empty:
+                    hist = self._prepare_history(hist, target_date)
+                    if hist.empty:
                         continue
 
                     latest = hist.iloc[-1]
-                    close_price = float(latest.get("close", 0))
-                    volume = float(latest.get("volume", 0))
-
-                    # 등락률
-                    daily_return = None
-                    if "change" in hist.columns:
-                        daily_return = float(latest["change"])
+                    close_price = (
+                        float(latest["close"])
+                        if pd.notna(latest.get("close"))
+                        else None
+                    )
+                    volume = (
+                        float(latest["volume"])
+                        if pd.notna(latest.get("volume"))
+                        else None
+                    )
+                    daily_return = self._compute_daily_return(hist)
+                    avg_volume_20d = self._compute_avg_volume(hist)
 
                     # 섹터
                     industry = info.get("industry", "") or info.get("sector", "") or ""
                     sector = VN_SECTOR_MAP.get(industry, "기타")
 
+                    market_cap = info.get("market_cap")
+                    if pd.isna(market_cap) or market_cap in ("", None):
+                        market_cap = None
+                    else:
+                        try:
+                            market_cap = float(market_cap)
+                        except (TypeError, ValueError):
+                            market_cap = None
+
+                    if "_date" in hist.columns:
+                        used_dates.append(hist.iloc[-1]["_date"].strftime("%Y-%m-%d"))
+
                     rows.append({
                         "ticker": ticker,
                         "name": info.get("name", ticker),
                         "sector": sector,
-                        "market_cap": info.get("market_cap"),
+                        "market_cap": market_cap,
                         "close_price": close_price,
                         "daily_return": daily_return,
                         "volume": volume,
-                        "avg_volume_20d": None,
+                        "avg_volume_20d": avg_volume_20d,
                     })
 
                     time.sleep(0.1)  # 부하 방지
@@ -123,9 +146,56 @@ class VietnamCollector(BaseCollector):
                     logger.info(f"[VN] {len(rows)}개 수집 중...")
 
             df = pd.DataFrame(rows)
+            if used_dates:
+                self.effective_date = max(used_dates)
             logger.info(f"[VN] 수집 완료: {len(df)}개 종목")
             return df
 
         except Exception as e:
             logger.error(f"[VN] 수집 실패: {e}", exc_info=True)
             return pd.DataFrame()
+
+    def _prepare_history(self, hist: pd.DataFrame, target_date: datetime) -> pd.DataFrame:
+        """최근 구간에서 목표일 이전의 최신 거래일 데이터만 남긴다."""
+        if hist is None or hist.empty:
+            return pd.DataFrame()
+
+        hist = hist.copy()
+        date_col = next(
+            (col for col in ("time", "date", "tradingDate") if col in hist.columns),
+            None,
+        )
+        if date_col:
+            hist["_date"] = pd.to_datetime(hist[date_col], errors="coerce")
+            hist = hist.dropna(subset=["_date"])
+            hist = hist[hist["_date"].dt.date <= target_date.date()]
+            hist = hist.sort_values("_date")
+
+        return hist.reset_index(drop=True)
+
+    def _compute_daily_return(self, hist: pd.DataFrame) -> float | None:
+        """종가 기준 일간 수익률을 계산한다."""
+        if "close" not in hist.columns:
+            return None
+
+        valid = hist.dropna(subset=["close"])
+        if len(valid) < 2:
+            return None
+
+        latest_close = float(valid.iloc[-1]["close"])
+        prev_close = float(valid.iloc[-2]["close"])
+        if prev_close <= 0:
+            return None
+
+        return ((latest_close - prev_close) / prev_close) * 100
+
+    def _compute_avg_volume(self, hist: pd.DataFrame) -> float | None:
+        """최근 20거래일 평균 거래량을 계산한다."""
+        if "volume" not in hist.columns:
+            return None
+
+        volumes = hist["volume"].dropna().tail(20)
+        if len(volumes) == 0:
+            return None
+
+        return float(volumes.mean())

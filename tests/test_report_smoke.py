@@ -1,0 +1,138 @@
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts import report as report_script
+from src import reporter
+import src.database as database
+
+
+class ReportSmokeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.tempdir.name) / "data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = self.data_dir / "marketbot.db"
+
+        self.patchers = [
+            patch.object(database, "DATA_DIR", self.data_dir),
+            patch.object(database, "DB_PATH", self.db_path),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+        database.init_db()
+        self._seed_database()
+
+    def tearDown(self) -> None:
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.tempdir.cleanup()
+
+    def _seed_database(self) -> None:
+        conn = database.get_connection()
+        now = "2026-04-20T00:00:00"
+
+        database.upsert_sector_performance(conn, [
+            {
+                "date": "2026-04-20",
+                "country": "US",
+                "sector": "정보기술",
+                "daily_return": 1.2,
+                "weekly_return": 4.5,
+                "breadth": 0.75,
+                "volume_change": 8.0,
+                "stock_count": 120,
+                "top_gainers": [{"name": "NVIDIA", "return": 4.2}],
+                "top_losers": [{"name": "Intel", "return": -1.1}],
+                "collected_at": now,
+            },
+            {
+                "date": "2026-04-20",
+                "country": "KR",
+                "sector": "정보기술",
+                "daily_return": 0.4,
+                "weekly_return": 1.2,
+                "breadth": 0.55,
+                "volume_change": 3.0,
+                "stock_count": 80,
+                "top_gainers": [{"name": "삼성전자", "return": 2.0}],
+                "top_losers": [{"name": "LG전자", "return": -0.7}],
+                "collected_at": now,
+            },
+            {
+                "date": "2026-04-20",
+                "country": "US",
+                "sector": "금융",
+                "daily_return": -0.9,
+                "weekly_return": -1.8,
+                "breadth": 0.30,
+                "volume_change": 6.0,
+                "stock_count": 60,
+                "top_gainers": [{"name": "JPMorgan", "return": 0.5}],
+                "top_losers": [{"name": "Goldman Sachs", "return": -2.2}],
+                "collected_at": now,
+            },
+            {
+                "date": "2026-04-20",
+                "country": "KR",
+                "sector": "금융",
+                "daily_return": -0.2,
+                "weekly_return": -0.4,
+                "breadth": 0.45,
+                "volume_change": 2.0,
+                "stock_count": 40,
+                "top_gainers": [{"name": "KB금융", "return": 0.7}],
+                "top_losers": [{"name": "신한지주", "return": -1.0}],
+                "collected_at": now,
+            },
+        ])
+
+        database.upsert_stock_daily(conn, [
+            {
+                "date": "2026-04-20",
+                "ticker": "005930",
+                "name": "삼성전자",
+                "country": "KR",
+                "sector": "정보기술",
+                "market_cap": 350_000_000_000_000,
+                "close_price": 70000,
+                "daily_return": 52.0,
+                "volume": 1000000,
+                "avg_volume_20d": 800000,
+                "is_filtered": 0,
+                "is_abnormal": 1,
+            }
+        ])
+
+        conn.commit()
+        conn.close()
+
+    def test_prepare_report_data_writes_trend_scores(self) -> None:
+        report_script.prepare_report_data(date="2026-04-20")
+
+        conn = database.get_connection()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trend_scores WHERE date = ?",
+            ("2026-04-20",),
+        ).fetchone()[0]
+        conn.close()
+
+        self.assertEqual(count, 2)
+
+    def test_format_daily_report_includes_core_sections(self) -> None:
+        report_script.prepare_report_data(date="2026-04-20")
+        messages = reporter.format_daily_report(date="2026-04-20")
+        joined = "\n".join(messages)
+
+        self.assertIn("글로벌 섹터 데일리 리포트 (2026-04-20)", joined)
+        self.assertIn("미국", joined)
+        self.assertIn("비정상 급등/급락", joined)
+
+    def test_format_country_detail_returns_expected_market_section(self) -> None:
+        detail = reporter.format_country_detail("KR", date="2026-04-20")
+
+        self.assertIn("한국 섹터 상세", detail)
+        self.assertIn("정보기술", detail)
+        self.assertIn("금융", detail)

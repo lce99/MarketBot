@@ -38,10 +38,15 @@ class BaseCollector(ABC):
         """
         ...
 
-    def run(self, date: str | None = None):
-        """수집 → 필터 → 섹터 집계 → DB 저장 전체 파이프라인 실행."""
+    def run(self, date: str | None = None) -> bool:
+        """수집 → 필터 → 섹터 집계 → DB 저장 전체 파이프라인 실행.
+
+        Returns:
+            정상 저장까지 완료하면 True, 데이터가 비어 실패하면 False.
+        """
         if date is None:
             date = datetime.utcnow().strftime("%Y-%m-%d")
+        self.effective_date = date
 
         country = self.country_code
         info = COUNTRIES[country]
@@ -57,7 +62,13 @@ class BaseCollector(ABC):
                 log_collection(conn, country, "failed", error="데이터 없음")
                 conn.commit()
                 logger.warning(f"[{country}] 데이터 없음")
-                return
+                return False
+
+            effective_date = getattr(self, "effective_date", date)
+            if effective_date != date:
+                logger.warning(
+                    f"[{country}] 요청일 {date} 대신 실제 거래일 {effective_date} 데이터 사용"
+                )
 
             total = len(df)
             logger.info(f"[{country}] 수집 완료: {total}개 종목")
@@ -75,7 +86,7 @@ class BaseCollector(ABC):
             stock_rows = []
             for _, row in df.iterrows():
                 stock_rows.append({
-                    "date": date,
+                    "date": effective_date,
                     "ticker": row["ticker"],
                     "name": row.get("name", ""),
                     "country": country,
@@ -92,7 +103,7 @@ class BaseCollector(ABC):
 
             # 4) 섹터별 집계 (필터 통과 + 비정상 아닌 종목만)
             active = df[(df["is_filtered"] == 0) & (df["is_abnormal"] == 0)]
-            sector_rows = self._aggregate_sectors(active, date, country)
+            sector_rows = self._aggregate_sectors(active, effective_date, country)
             upsert_sector_performance(conn, sector_rows)
 
             # 5) 수집 로그
@@ -105,6 +116,7 @@ class BaseCollector(ABC):
                 f"[{country}] 저장 완료: "
                 f"{len(sector_rows)}개 섹터, {len(stock_rows)}개 종목"
             )
+            return True
 
         except Exception as e:
             log_collection(conn, country, "failed", error=str(e))

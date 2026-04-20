@@ -11,8 +11,12 @@ from src.database import get_connection, init_db, upsert_benchmark_daily
 logger = logging.getLogger(__name__)
 
 
-def collect_benchmarks(date: str | None = None):
-    """모든 벤치마크 티커의 일간 데이터를 수집하여 DB에 저장."""
+def collect_benchmarks(date: str | None = None) -> int:
+    """모든 벤치마크 티커의 일간 데이터를 수집하여 DB에 저장.
+
+    Returns:
+        저장된 벤치마크 row 수.
+    """
     if date is None:
         date = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -37,11 +41,11 @@ def collect_benchmarks(date: str | None = None):
         )
     except Exception as e:
         logger.error(f"벤치마크 다운로드 실패: {e}")
-        return
+        raise RuntimeError("벤치마크 다운로드 실패") from e
 
     if data.empty:
         logger.warning("벤치마크 데이터 없음")
-        return
+        raise RuntimeError("벤치마크 데이터 없음")
 
     init_db()
     conn = get_connection()
@@ -99,3 +103,6 @@ def collect_benchmarks(date: str | None = None):
         conn.commit()
         logger.info(f"벤치마크 저장: {len(rows)}개")
     conn.close()
+    if not rows:
+        raise RuntimeError("벤치마크 저장 대상 없음")
+    return len(rows)
