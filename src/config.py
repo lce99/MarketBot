@@ -119,6 +119,18 @@ FILTER_VOLUME_BOTTOM_PERCENTILE = 20
 # 비정상 급등/급락 기준 (±%)
 FILTER_ABNORMAL_RETURN_THRESHOLD = 50.0
 
+# Markets where daily full-universe fetch is expensive can reuse the previous
+# run's universe cache and only fetch the top candidate set.
+UNIVERSE_PREFILTER_TARGET_COUNT = {
+    "US": 1200,
+}
+
+# Force one weekly full refresh so new entrants can make it into the cache.
+# Monday is 0, Sunday is 6.
+UNIVERSE_PREFILTER_FULL_REFRESH_WEEKDAY = {
+    "US": 0,
+}
+
 # ── 벤치마크 티커 (yfinance) ──
 BENCHMARK_TICKERS = {
     # 미국 섹터 ETF

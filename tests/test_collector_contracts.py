@@ -202,9 +202,10 @@ class CollectorContractTests(unittest.TestCase):
             "src.collectors.finnhub_collector.yf.download",
             return_value=build_download_frame(fixture["prices"]),
         ):
-            with patch.object(collector, "_add_market_caps", side_effect=lambda df: df):
-                with patch("src.collectors.finnhub_collector.time.sleep", return_value=None):
-                    actual = collector.fetch_all_stocks("2026-04-20")
+            with patch.object(collector, "_prefilter_stocks", side_effect=lambda stocks, _date: stocks):
+                with patch.object(collector, "_add_market_caps", side_effect=lambda df: df):
+                    with patch("src.collectors.finnhub_collector.time.sleep", return_value=None):
+                        actual = collector.fetch_all_stocks("2026-04-20")
 
         self.assertEqual(collector.effective_date, "2026-04-20")
         self.assert_contract_frame(

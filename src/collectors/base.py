@@ -16,6 +16,7 @@ from src.database import (
     init_raw_db,
     log_collection,
     replace_abnormal_stocks,
+    upsert_instrument_universe,
     upsert_sector_performance,
     upsert_stock_daily,
 )
@@ -95,6 +96,7 @@ class BaseCollector(ABC):
 
             upsert_stock_daily(raw_conn, stock_rows)
             replace_abnormal_stocks(summary_conn, effective_date, country, stock_rows)
+            upsert_instrument_universe(summary_conn, country, stock_rows)
 
             active = df[(df["is_filtered"] == 0) & (df["is_abnormal"] == 0)]
             sector_rows = self._aggregate_sectors(active, effective_date, country)

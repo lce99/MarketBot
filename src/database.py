@@ -101,6 +101,23 @@ def init_db() -> None:
             error_message TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS instrument_universe (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            country TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            name TEXT,
+            sector TEXT,
+            market_cap REAL,
+            last_close_price REAL,
+            last_volume REAL,
+            avg_volume_20d REAL,
+            last_seen_date TEXT NOT NULL,
+            last_is_filtered INTEGER DEFAULT 0,
+            last_is_abnormal INTEGER DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            UNIQUE(country, ticker)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_sector_perf_date
             ON sector_performance(date);
         CREATE INDEX IF NOT EXISTS idx_sector_perf_country
@@ -115,6 +132,8 @@ def init_db() -> None:
             ON benchmark_daily(country, date);
         CREATE INDEX IF NOT EXISTS idx_trend_date
             ON trend_scores(date);
+        CREATE INDEX IF NOT EXISTS idx_universe_country
+            ON instrument_universe(country, last_seen_date);
         """
     )
     conn.commit()
@@ -347,6 +366,62 @@ def upsert_abnormal_stocks(conn: sqlite3.Connection, rows: list[dict]) -> None:
     )
 
 
+def upsert_instrument_universe(
+    conn: sqlite3.Connection,
+    country: str,
+    rows: list[dict],
+) -> None:
+    """Persist the latest instrument snapshot for future prefiltering."""
+    if not rows:
+        return
+
+    updated_at = datetime.utcnow().isoformat()
+    universe_rows = [
+        {
+            "country": country,
+            "ticker": row["ticker"],
+            "name": row.get("name", ""),
+            "sector": row.get("sector"),
+            "market_cap": row.get("market_cap"),
+            "last_close_price": row.get("close_price"),
+            "last_volume": row.get("volume"),
+            "avg_volume_20d": row.get("avg_volume_20d"),
+            "last_seen_date": row["date"],
+            "last_is_filtered": int(row.get("is_filtered", 0)),
+            "last_is_abnormal": int(row.get("is_abnormal", 0)),
+            "updated_at": updated_at,
+        }
+        for row in rows
+    ]
+
+    conn.executemany(
+        """
+        INSERT INTO instrument_universe (
+            country, ticker, name, sector, market_cap,
+            last_close_price, last_volume, avg_volume_20d,
+            last_seen_date, last_is_filtered, last_is_abnormal, updated_at
+        )
+        VALUES (
+            :country, :ticker, :name, :sector, :market_cap,
+            :last_close_price, :last_volume, :avg_volume_20d,
+            :last_seen_date, :last_is_filtered, :last_is_abnormal, :updated_at
+        )
+        ON CONFLICT(country, ticker) DO UPDATE SET
+            name = excluded.name,
+            sector = excluded.sector,
+            market_cap = excluded.market_cap,
+            last_close_price = excluded.last_close_price,
+            last_volume = excluded.last_volume,
+            avg_volume_20d = excluded.avg_volume_20d,
+            last_seen_date = excluded.last_seen_date,
+            last_is_filtered = excluded.last_is_filtered,
+            last_is_abnormal = excluded.last_is_abnormal,
+            updated_at = excluded.updated_at
+        """,
+        universe_rows,
+    )
+
+
 def replace_abnormal_stocks(
     conn: sqlite3.Connection,
     date: str,
@@ -567,6 +642,23 @@ def get_latest_collection_log(
     query += " ORDER BY timestamp DESC, id DESC LIMIT 1"
     row = conn.execute(query, params).fetchone()
     return dict(row) if row else None
+
+
+def get_instrument_universe(
+    conn: sqlite3.Connection,
+    country: str,
+) -> list[dict]:
+    """Return the cached instrument universe snapshot for one market."""
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM instrument_universe
+        WHERE country = ?
+        ORDER BY last_seen_date DESC, last_volume DESC
+        """,
+        (country,),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_recent_collection_logs(

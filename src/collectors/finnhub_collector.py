@@ -19,7 +19,14 @@ import yfinance as yf
 
 from src.collectors.base import BaseCollector
 from src.collectors.date_utils import compute_period_return_from_closes
-from src.config import COUNTRIES, FINNHUB_API_KEY, SECTOR_EN_TO_KR
+from src.config import (
+    COUNTRIES,
+    FINNHUB_API_KEY,
+    SECTOR_EN_TO_KR,
+    UNIVERSE_PREFILTER_FULL_REFRESH_WEEKDAY,
+    UNIVERSE_PREFILTER_TARGET_COUNT,
+)
+from src.database import get_connection, get_instrument_universe
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +82,126 @@ class FinnhubCollector(BaseCollector):
             self._call_count = 0
             self._last_reset = time.time()
 
+    def _prefilter_stocks(self, stocks: list[dict], date: str) -> list[dict]:
+        """Reuse the latest universe snapshot before expensive yfinance fetches."""
+        target_count = UNIVERSE_PREFILTER_TARGET_COUNT.get(self.country_code)
+        if not target_count or len(stocks) <= target_count:
+            return stocks
+
+        refresh_weekday = UNIVERSE_PREFILTER_FULL_REFRESH_WEEKDAY.get(
+            self.country_code
+        )
+        try:
+            requested_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            requested_date = None
+
+        if (
+            requested_date is not None
+            and refresh_weekday is not None
+            and requested_date.weekday() == refresh_weekday
+        ):
+            logger.info(
+                f"[{self.country_code}] weekly full refresh day, skip prefilter"
+            )
+            return stocks
+
+        try:
+            conn = get_connection()
+            try:
+                cached_rows = get_instrument_universe(conn, self.country_code)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning(
+                f"[{self.country_code}] universe cache unavailable, use full fetch: {exc}"
+            )
+            return stocks
+
+        if not cached_rows:
+            logger.info(f"[{self.country_code}] universe cache empty, use full fetch")
+            return stocks
+
+        stock_by_ticker = {
+            stock["symbol"]: stock for stock in stocks if stock.get("symbol")
+        }
+        cached_rows = [
+            row for row in cached_rows if row.get("ticker") in stock_by_ticker
+        ]
+        if not cached_rows:
+            logger.info(
+                f"[{self.country_code}] cache does not match current symbols, use full fetch"
+            )
+            return stocks
+
+        min_cached_rows = min(len(stocks), max(200, target_count // 2))
+        if len(cached_rows) < min_cached_rows:
+            logger.info(
+                f"[{self.country_code}] cache too small ({len(cached_rows)}/{len(stocks)}), use full fetch"
+            )
+            return stocks
+
+        if requested_date is not None:
+            fresh_rows = []
+            for row in cached_rows:
+                last_seen_date = row.get("last_seen_date")
+                if not last_seen_date:
+                    continue
+                try:
+                    age_days = (
+                        requested_date - datetime.strptime(last_seen_date, "%Y-%m-%d")
+                    ).days
+                except ValueError:
+                    continue
+                if age_days <= 14:
+                    fresh_rows.append(row)
+
+            if len(fresh_rows) < min_cached_rows:
+                logger.info(
+                    f"[{self.country_code}] cache too stale ({len(fresh_rows)}/{len(cached_rows)} fresh), use full fetch"
+                )
+                return stocks
+            cached_rows = fresh_rows
+
+        def sort_key(row: dict) -> tuple:
+            abnormal_rank = 0 if int(row.get("last_is_abnormal") or 0) == 1 else 1
+            filtered_rank = 0 if int(row.get("last_is_filtered") or 0) == 0 else 1
+            volume_rank = -(float(row.get("last_volume") or 0.0))
+            market_cap_rank = -(float(row.get("market_cap") or 0.0))
+            return (
+                abnormal_rank,
+                filtered_rank,
+                volume_rank,
+                market_cap_rank,
+                row.get("ticker", ""),
+            )
+
+        selected = []
+        selected_tickers = set()
+        for row in sorted(cached_rows, key=sort_key):
+            ticker = row.get("ticker")
+            if not ticker or ticker in selected_tickers:
+                continue
+            selected.append(stock_by_ticker[ticker])
+            selected_tickers.add(ticker)
+            if len(selected) >= target_count:
+                break
+
+        if len(selected) < target_count:
+            for stock in stocks:
+                ticker = stock.get("symbol")
+                if not ticker or ticker in selected_tickers:
+                    continue
+                selected.append(stock)
+                selected_tickers.add(ticker)
+                if len(selected) >= target_count:
+                    break
+
+        logger.info(
+            f"[{self.country_code}] universe prefilter {len(stocks)} -> {len(selected)}"
+        )
+        return selected
+
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
         """전종목 수집. yfinance로 가격 데이터, Finnhub으로 종목 리스트."""
         exchange = EXCHANGE_MAP.get(self.country_code, "US")
@@ -108,7 +235,9 @@ class FinnhubCollector(BaseCollector):
                           for suffix in ["/W", "/U", "/R", "-W", "-U"])
             ]
 
-        logger.info(f"[{self.country_code}] 대상 종목: {len(stocks)}개")
+        logger.info(f"[{self.country_code}] 대상 종목(원본): {len(stocks)}개")
+        stocks = self._prefilter_stocks(stocks, date)
+        logger.info(f"[{self.country_code}] 다운로드 후보: {len(stocks)}개")
 
         # 2) yfinance로 배치 가격 데이터 수집 (Finnhub보다 효율적)
         tickers = [s["symbol"] for s in stocks]
