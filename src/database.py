@@ -213,6 +213,44 @@ def get_latest_sector_performance(conn: sqlite3.Connection,
     return [dict(r) for r in rows]
 
 
+def get_latest_benchmarks(conn: sqlite3.Connection,
+                          date: Optional[str] = None,
+                          country: Optional[str] = None) -> list[dict]:
+    """보고일 기준 최신 벤치마크 스냅샷 조회."""
+    if date is None:
+        row = conn.execute("SELECT MAX(date) FROM benchmark_daily").fetchone()
+        date = row[0] if row and row[0] else None
+        if date is None:
+            return []
+
+    subquery = """
+        SELECT ticker, MAX(date) AS latest_date
+        FROM benchmark_daily
+        WHERE date <= ?
+    """
+    params: list[object] = [date]
+    if country:
+        subquery += " AND country = ?"
+        params.append(country)
+    subquery += " GROUP BY ticker"
+
+    query = f"""
+        SELECT b.*
+        FROM benchmark_daily b
+        JOIN (
+            {subquery}
+        ) latest
+          ON latest.ticker = b.ticker
+         AND latest.latest_date = b.date
+        ORDER BY b.country,
+                 CASE WHEN b.sector IS NULL THEN 0 ELSE 1 END,
+                 b.sector,
+                 b.name
+    """
+    rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_abnormal_stocks(conn: sqlite3.Connection,
                         date: Optional[str] = None) -> list[dict]:
     """비정상 급등/급락 종목 조회"""

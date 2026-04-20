@@ -34,77 +34,119 @@ class ReportSmokeTests(unittest.TestCase):
         conn = database.get_connection()
         now = "2026-04-20T00:00:00"
 
-        database.upsert_sector_performance(conn, [
-            {
-                "date": "2026-04-20",
-                "country": "US",
-                "sector": "정보기술",
-                "daily_return": 1.2,
-                "weekly_return": 0.0,
-                "breadth": 0.75,
-                "volume_change": 8.0,
-                "stock_count": 120,
-                "top_gainers": [{"name": "NVIDIA", "return": 4.2}],
-                "top_losers": [{"name": "Intel", "return": -1.1}],
-                "collected_at": now,
-            },
-            {
-                "date": "2026-04-20",
-                "country": "KR",
-                "sector": "정보기술",
-                "daily_return": 0.4,
-                "weekly_return": 10.0,
-                "breadth": 0.55,
-                "volume_change": 3.0,
-                "stock_count": 80,
-                "top_gainers": [{"name": "삼성전자", "return": 2.0}],
-                "top_losers": [{"name": "LG전자", "return": -0.7}],
-                "collected_at": now,
-            },
-            {
-                "date": "2026-04-20",
-                "country": "US",
-                "sector": "금융",
-                "daily_return": -0.9,
-                "weekly_return": -1.8,
-                "breadth": 0.30,
-                "volume_change": 6.0,
-                "stock_count": 60,
-                "top_gainers": [{"name": "JPMorgan", "return": 0.5}],
-                "top_losers": [{"name": "Goldman Sachs", "return": -2.2}],
-                "collected_at": now,
-            },
-            {
-                "date": "2026-04-20",
-                "country": "KR",
-                "sector": "금융",
-                "daily_return": -0.2,
-                "weekly_return": -0.4,
-                "breadth": 0.45,
-                "volume_change": 2.0,
-                "stock_count": 40,
-                "top_gainers": [{"name": "KB금융", "return": 0.7}],
-                "top_losers": [{"name": "신한지주", "return": -1.0}],
-                "collected_at": now,
-            },
-        ])
+        database.upsert_sector_performance(
+            conn,
+            [
+                {
+                    "date": "2026-04-20",
+                    "country": "US",
+                    "sector": "정보기술",
+                    "daily_return": 1.2,
+                    "weekly_return": 0.0,
+                    "breadth": 0.75,
+                    "volume_change": 8.0,
+                    "stock_count": 120,
+                    "top_gainers": [{"name": "NVIDIA", "return": 4.2}],
+                    "top_losers": [{"name": "Intel", "return": -1.1}],
+                    "collected_at": now,
+                },
+                {
+                    "date": "2026-04-20",
+                    "country": "KR",
+                    "sector": "정보기술",
+                    "daily_return": 0.4,
+                    "weekly_return": 10.0,
+                    "breadth": 0.55,
+                    "volume_change": 3.0,
+                    "stock_count": 80,
+                    "top_gainers": [{"name": "삼성전자", "return": 2.0}],
+                    "top_losers": [{"name": "LG전자", "return": -0.7}],
+                    "collected_at": now,
+                },
+                {
+                    "date": "2026-04-20",
+                    "country": "US",
+                    "sector": "금융",
+                    "daily_return": -0.9,
+                    "weekly_return": -1.8,
+                    "breadth": 0.30,
+                    "volume_change": 6.0,
+                    "stock_count": 60,
+                    "top_gainers": [{"name": "JPMorgan", "return": 0.5}],
+                    "top_losers": [{"name": "Goldman Sachs", "return": -2.2}],
+                    "collected_at": now,
+                },
+                {
+                    "date": "2026-04-20",
+                    "country": "KR",
+                    "sector": "금융",
+                    "daily_return": -0.2,
+                    "weekly_return": -0.4,
+                    "breadth": 0.45,
+                    "volume_change": 2.0,
+                    "stock_count": 40,
+                    "top_gainers": [{"name": "KB금융", "return": 0.7}],
+                    "top_losers": [{"name": "신한지주", "return": -1.0}],
+                    "collected_at": now,
+                },
+            ],
+        )
 
-        database.upsert_stock_daily(conn, [
-            {
-                "date": "2026-04-20",
-                "ticker": "005930",
-                "name": "삼성전자",
-                "country": "KR",
-                "sector": "정보기술",
-                "market_cap": 350_000_000_000_000,
-                "close_price": 70000,
-                "daily_return": 52.0,
-                "volume": 1000000,
-                "avg_volume_20d": 800000,
-                "is_filtered": 0,
-                "is_abnormal": 1,
-            }
-        ])
+        database.upsert_benchmark_daily(
+            conn,
+            [
+                {
+                    "date": "2026-04-20",
+                    "ticker": "XLK",
+                    "name": "US_IT",
+                    "country": "US",
+                    "sector": "정보기술",
+                    "close_price": 200.0,
+                    "daily_return": 0.9,
+                    "weekly_return": 3.4,
+                },
+                {
+                    "date": "2026-04-20",
+                    "ticker": "XLF",
+                    "name": "US_FIN",
+                    "country": "US",
+                    "sector": "금융",
+                    "close_price": 48.0,
+                    "daily_return": -0.4,
+                    "weekly_return": -0.8,
+                },
+                {
+                    "date": "2026-04-19",
+                    "ticker": "^KS11",
+                    "name": "KR_KOSPI",
+                    "country": "KR",
+                    "sector": None,
+                    "close_price": 2800.0,
+                    "daily_return": 0.15,
+                    "weekly_return": 1.1,
+                },
+            ],
+        )
+
+        database.upsert_stock_daily(
+            conn,
+            [
+                {
+                    "date": "2026-04-20",
+                    "ticker": "005930",
+                    "name": "삼성전자",
+                    "country": "KR",
+                    "sector": "정보기술",
+                    "market_cap": 350_000_000_000_000,
+                    "close_price": 70000,
+                    "daily_return": 52.0,
+                    "volume": 1000000,
+                    "avg_volume_20d": 800000,
+                    "is_filtered": 0,
+                    "is_abnormal": 1,
+                }
+            ],
+        )
 
         conn.commit()
         conn.close()
@@ -133,18 +175,27 @@ class ReportSmokeTests(unittest.TestCase):
 
         self.assertAlmostEqual(trend_score, 51.4, places=2)
 
-    def test_format_daily_report_includes_core_sections(self) -> None:
+    def test_format_daily_report_includes_benchmarks(self) -> None:
         report_script.prepare_report_data(date="2026-04-20")
         messages = reporter.format_daily_report(date="2026-04-20")
         joined = "\n".join(messages)
 
         self.assertIn("글로벌 섹터 데일리 리포트 (2026-04-20)", joined)
         self.assertIn("미국", joined)
+        self.assertIn("벤치 XLK +0.90%", joined)
+        self.assertIn("기준선 KOSPI +0.15% (04-19)", joined)
         self.assertIn("비정상 급등/급락", joined)
 
     def test_format_country_detail_returns_expected_market_section(self) -> None:
         detail = reporter.format_country_detail("KR", date="2026-04-20")
 
         self.assertIn("한국 섹터 상세", detail)
-        self.assertIn("정보기술", detail)
+        self.assertIn("기준선 KOSPI +0.15% (04-19)", detail)
+        self.assertIn("KOSPI 대비 +0.25%", detail)
         self.assertIn("금융", detail)
+
+    def test_format_sector_detail_uses_country_and_sector_benchmarks(self) -> None:
+        detail = reporter.format_sector_detail("정보기술", date="2026-04-20")
+
+        self.assertIn("벤치 XLK +0.90%", detail)
+        self.assertIn("벤치 KOSPI +0.15% (04-19)", detail)
