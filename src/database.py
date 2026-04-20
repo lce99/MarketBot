@@ -226,3 +226,46 @@ def get_abnormal_stocks(conn: sqlite3.Connection,
     query += " ORDER BY ABS(daily_return) DESC"
     rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_latest_collection_log(
+    conn: sqlite3.Connection,
+    market: str,
+    status: Optional[str] = None,
+) -> Optional[dict]:
+    """특정 시장의 가장 최근 수집 로그 1건 조회."""
+    query = "SELECT * FROM collection_log WHERE market = ?"
+    params: list[str] = [market]
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY timestamp DESC, id DESC LIMIT 1"
+    row = conn.execute(query, params).fetchone()
+    return dict(row) if row else None
+
+
+def get_recent_collection_logs(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    status: Optional[str] = None,
+) -> list[dict]:
+    """최근 수집 로그 조회."""
+    query = "SELECT * FROM collection_log"
+    params: list[object] = []
+    if status:
+        query += " WHERE status = ?"
+        params.append(status)
+    query += " ORDER BY timestamp DESC, id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_sector_dates_by_country(conn: sqlite3.Connection) -> dict[str, str]:
+    """국가별 최근 섹터 데이터 날짜 조회."""
+    rows = conn.execute("""
+        SELECT country, MAX(date) AS latest_date
+        FROM sector_performance
+        GROUP BY country
+    """).fetchall()
+    return {row["country"]: row["latest_date"] for row in rows if row["latest_date"]}

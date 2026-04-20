@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.config import COUNTRIES
+from src.monitor import format_failure_alert, send_admin_alert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,8 +99,15 @@ def main():
             failed_markets.append(market)
 
     if failed_markets:
+        send_failure_alert(failed_markets, date)
         failed_list = ", ".join(failed_markets)
         raise SystemExit(f"수집 실패/데이터 없음 시장: {failed_list}")
+
+
+def send_failure_alert(failed_markets: list[str], date: str) -> None:
+    """실패 시장이 있으면 관리자용 텔레그램 알림을 전송한다."""
+    alert_text = format_failure_alert(failed_markets, as_of_date=date)
+    send_admin_alert(alert_text)
 
 
 if __name__ == "__main__":

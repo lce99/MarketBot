@@ -65,6 +65,9 @@ jobs:
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
         run: python -m scripts.collect --market ${{ steps.market.outputs.market }}
 
       - name: Collect benchmarks

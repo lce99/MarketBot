@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 
 from src.config import COUNTRIES, SECTORS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from src.monitor import format_status_report
 from src.reporter import (
     format_country_detail,
     format_daily_report,
@@ -45,6 +46,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/country 한국 - 특정 국가 상세\n"
         f"/trending - 글로벌 트렌딩 TOP 5\n"
         f"/abnormal - 비정상 급등/급락\n"
+        f"/status - 운영 상태\n"
         f"/help - 도움말"
     )
 
@@ -113,6 +115,17 @@ async def cmd_abnormal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\u2705 오늘 비정상 급등/급락 종목이 없습니다.")
 
 
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """운영 상태 요약."""
+    market_codes = []
+    if context.args:
+        for arg in context.args:
+            market_codes.append(COUNTRY_NAME_MAP.get(arg, arg.upper()))
+
+    msg = format_status_report(markets=market_codes or None)
+    await update.message.reply_text(msg)
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """도움말."""
     await update.message.reply_text(
@@ -123,6 +136,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/country 한국 - 특정 국가의 섹터별 상세\n"
         "/trending - 글로벌 트렌딩 섹터 TOP 5\n"
         "/abnormal - 비정상 급등/급락 종목\n\n"
+        "/status - 운영 상태 점검\n\n"
         "자동 리포트: 매일 미국 장 마감 후 발송\n\n"
         "지원 국가: 미국, 한국, 중국, 일본, 베트남, 인도, 독일\n"
         "분석 섹터: GICS 11개 섹터"
@@ -154,6 +168,7 @@ def run_bot():
     app.add_handler(CommandHandler("country", cmd_country))
     app.add_handler(CommandHandler("trending", cmd_trending))
     app.add_handler(CommandHandler("abnormal", cmd_abnormal))
+    app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("help", cmd_help))
 
     print("\U0001f916 MarketBot 실행 중... (Ctrl+C로 종료)")

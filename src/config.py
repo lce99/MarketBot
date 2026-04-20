@@ -18,8 +18,10 @@ except ImportError:
 # ── API 키 (환경변수) ──
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_ALERT_CHAT_ID = os.getenv("TELEGRAM_ALERT_CHAT_ID", TELEGRAM_CHAT_ID)
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
+STATUS_STALE_AFTER_DAYS = int(os.getenv("STATUS_STALE_AFTER_DAYS", "4"))
 
 # ── GICS 11개 섹터 (한글 ↔ 영문 매핑) ──
 SECTORS = {

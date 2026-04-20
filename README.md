@@ -47,6 +47,7 @@ TUSHARE_TOKEN=your_tushare_token_here
 메모:
 
 - `TELEGRAM_*`이 없으면 리포트는 콘솔로 출력됩니다.
+- `TELEGRAM_ALERT_CHAT_ID`를 지정하면 수집 실패 알림을 별도 채팅으로 보낼 수 있습니다.
 - `FINNHUB_API_KEY`는 미국 시장 수집에 필요합니다.
 - `TUSHARE_TOKEN`은 중국 시장 수집에 필요합니다.
 - 베트남 수집은 `vnstock` 라이브러리를 사용하므로 별도 키가 필요하지 않습니다.
@@ -81,6 +82,22 @@ python -m scripts.report --skip-analyze --date 2026-04-20
 python -m scripts.report --date 2026-04-20
 ```
 
+### 4-1. 운영 상태 확인
+
+텔레그램 봇에서 아래 명령으로 운영 상태를 볼 수 있습니다.
+
+```text
+/status
+/status KR VN
+```
+
+보여주는 항목:
+
+- 마지막 성공일
+- 최근 실패 시장
+- stale 시장
+- 시장별 최신 데이터 날짜
+
 ### 5. SQLite 체크포인트
 
 이 프로젝트는 SQLite `WAL` 모드를 사용합니다. DB를 Git에 커밋하기 전에 아래 명령으로 메인 DB 파일에 반영할 수 있습니다.
@@ -96,6 +113,7 @@ python -m scripts.checkpoint_db
 - `collect_market.yml`: 시장 수집 -> 벤치마크 수집 -> SQLite 체크포인트 -> DB 커밋
 - `daily_report.yml`: 리포트용 파생 데이터 계산 -> SQLite 체크포인트 -> DB 커밋 -> 텔레그램 전송
 - `smoke_tests.yml`: 외부 API 없이 돌아가는 기본 스모크 테스트 실행
+- 수집 실패 시 `TELEGRAM_ALERT_CHAT_ID`가 설정되어 있으면 관리자용 텔레그램 알림 전송
 
 ## 테스트
 
