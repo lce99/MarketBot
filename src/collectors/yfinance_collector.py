@@ -146,6 +146,8 @@ IN_TICKERS = [
 class YfinanceCollector(BaseCollector):
     """yfinance 기반 수집기. 사전 정의된 인덱스 구성종목을 수집."""
 
+    metadata_source = "yfinance"
+
     def __init__(self, country_code: str, tickers: list[str]):
         self.country_code = country_code
         self._tickers = tickers
@@ -243,49 +245,100 @@ class YfinanceCollector(BaseCollector):
             self.effective_date = max(used_dates)
 
         if not df.empty:
-            df = self._add_sector_and_cap(df)
+            df = self._add_sector_and_cap(df, date)
 
         logger.info(f"[{self.country_code}] 수집 완료: {len(df)}개 종목")
         return df
 
-    def _add_sector_and_cap(self, df: pd.DataFrame) -> pd.DataFrame:
-        """yfinance Ticker.info로 섹터와 시총 보충."""
+    def _apply_metadata_to_df(
+        self,
+        df: pd.DataFrame,
+        names: dict[str, str],
+        sectors: dict[str, str],
+        market_caps: dict[str, float],
+    ) -> pd.DataFrame:
+        """Overlay cached/refreshed metadata onto the quote snapshot."""
+        if names:
+            mapped_names = df["ticker"].map(names)
+            df["name"] = mapped_names.where(mapped_names.notna(), df["name"])
+        if sectors:
+            mapped_sectors = df["ticker"].map(sectors)
+            df["sector"] = mapped_sectors.where(mapped_sectors.notna(), df["sector"])
+        if market_caps:
+            mapped_caps = df["ticker"].map(market_caps)
+            df["market_cap"] = mapped_caps.where(mapped_caps.notna(), df["market_cap"])
+        return df
+
+    def _add_sector_and_cap(self, df: pd.DataFrame, date: str) -> pd.DataFrame:
+        """Reuse cached metadata and only refresh yfinance info when needed."""
+        tickers = df["ticker"].tolist()
+        cached_metadata = self._get_cached_metadata(tickers)
+        refresh_due = self._is_metadata_refresh_due(date)
+
+        names = {}
         sectors = {}
         market_caps = {}
+        for ticker, row in cached_metadata.items():
+            if row.get("name"):
+                names[ticker] = row["name"]
+            if row.get("sector"):
+                sectors[ticker] = row["sector"]
+            if row.get("market_cap") is not None:
+                market_caps[ticker] = float(row["market_cap"])
 
-        for ticker in df["ticker"].tolist():
+        metadata_rows = []
+        for ticker in tickers:
+            cached_row = cached_metadata.get(ticker)
+            if (
+                not refresh_due
+                and cached_row is not None
+                and self._metadata_row_is_fresh(cached_row, date)
+            ):
+                continue
+
             try:
                 info = yf.Ticker(ticker).info
                 if not info:
                     continue
 
-                # 섹터
                 raw_sector = info.get("sector", "")
+                sector = None
                 if raw_sector:
-                    gics = YF_SECTOR_TO_GICS.get(raw_sector, SECTOR_EN_TO_KR.get(raw_sector, "기타"))
-                    sectors[ticker] = gics
+                    sector = YF_SECTOR_TO_GICS.get(
+                        raw_sector,
+                        SECTOR_EN_TO_KR.get(raw_sector, "기타"),
+                    )
 
-                # 시총
-                cap = info.get("marketCap")
-                if cap:
-                    market_caps[ticker] = float(cap)
+                market_cap = info.get("marketCap")
+                if market_cap is not None:
+                    market_caps[ticker] = float(market_cap)
 
-                # 이름
                 name = info.get("shortName") or info.get("longName")
                 if name:
-                    df.loc[df["ticker"] == ticker, "name"] = name
+                    names[ticker] = name
+                if sector:
+                    sectors[ticker] = sector
+
+                metadata_rows.append(
+                    {
+                        "ticker": ticker,
+                        "name": name or names.get(ticker) or ticker.split(".")[0],
+                        "sector": sector or sectors.get(ticker) or "기타",
+                        "market_cap": (
+                            float(market_cap) if market_cap is not None else market_caps.get(ticker)
+                        ),
+                    }
+                )
 
                 time.sleep(0.2)  # 부하 방지
             except Exception as e:
                 logger.debug(f"[{self.country_code}] {ticker} info 실패: {e}")
                 continue
 
-        if sectors:
-            df["sector"] = df["ticker"].map(lambda t: sectors.get(t, "기타"))
-        if market_caps:
-            df["market_cap"] = df["ticker"].map(market_caps)
+        if metadata_rows:
+            self._upsert_metadata(metadata_rows)
 
-        return df
+        return self._apply_metadata_to_df(df, names, sectors, market_caps)
 
 
 class JPCollector(YfinanceCollector):

@@ -64,6 +64,8 @@ FINNHUB_SECTOR_TO_GICS = {
 class FinnhubCollector(BaseCollector):
     """Finnhub API 기반 수집기. 국가 코드를 설정해서 사용."""
 
+    metadata_source = "finnhub"
+
     def __init__(self, country_code: str):
         self.country_code = country_code
         self._client = finnhub.Client(api_key=FINNHUB_API_KEY)
@@ -356,36 +358,95 @@ class FinnhubCollector(BaseCollector):
 
         # 시총이 없으면 Finnhub profile2로 보충 (상위 종목만, rate limit 고려)
         if not df.empty:
-            df = self._add_market_caps(df)
+            df = self._add_market_caps(df, date)
 
         return df
 
-    def _add_market_caps(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Finnhub profile2로 시가총액 추가. rate limit 고려하여 상위 종목만."""
-        # 거래량 상위 종목만 시총 조회 (rate limit 절약)
-        top_by_volume = df.nlargest(min(500, len(df)), "volume")
+    def _apply_metadata_to_df(
+        self,
+        df: pd.DataFrame,
+        names: dict[str, str],
+        sectors: dict[str, str],
+        market_caps: dict[str, float],
+    ) -> pd.DataFrame:
+        """Overlay cached/refreshed metadata onto the current quote snapshot."""
+        if names:
+            mapped_names = df["ticker"].map(names)
+            df["name"] = mapped_names.where(mapped_names.notna(), df["name"])
+        if sectors:
+            mapped_sectors = df["ticker"].map(sectors)
+            df["sector"] = mapped_sectors.where(mapped_sectors.notna(), df["sector"])
+        if market_caps:
+            mapped_caps = df["ticker"].map(market_caps)
+            df["market_cap"] = mapped_caps.where(mapped_caps.notna(), df["market_cap"])
+        return df
 
+    def _add_market_caps(self, df: pd.DataFrame, date: str) -> pd.DataFrame:
+        """Use cached metadata and only refresh Finnhub profiles when needed."""
+        tickers = df["ticker"].tolist()
+        cached_metadata = self._get_cached_metadata(tickers)
+        refresh_due = self._is_metadata_refresh_due(date)
+
+        names = {}
+        sectors = {}
         market_caps = {}
+        for ticker, row in cached_metadata.items():
+            if row.get("name"):
+                names[ticker] = row["name"]
+            if row.get("sector"):
+                sectors[ticker] = row["sector"]
+            if row.get("market_cap") is not None:
+                market_caps[ticker] = float(row["market_cap"])
+
+        # 거래량 상위 종목만 metadata refresh 대상으로 유지한다.
+        top_by_volume = df.nlargest(min(500, len(df)), "volume")
+        metadata_rows = []
+
         for _, row in top_by_volume.iterrows():
             ticker = row["ticker"]
+            cached_row = cached_metadata.get(ticker)
+            if (
+                not refresh_due
+                and cached_row is not None
+                and self._metadata_row_is_fresh(cached_row, date)
+            ):
+                continue
+
             try:
                 self._rate_limit()
                 profile = self._client.company_profile2(symbol=ticker)
-                if profile and "marketCapitalization" in profile:
-                    # Finnhub은 백만 단위로 반환
-                    market_caps[ticker] = profile["marketCapitalization"] * 1_000_000
-                    # 섹터도 보충
-                    if row["sector"] == "기타" and profile.get("finnhubIndustry"):
-                        sector = FINNHUB_SECTOR_TO_GICS.get(
-                            profile["finnhubIndustry"], "기타"
-                        )
-                        df.loc[df["ticker"] == ticker, "sector"] = sector
+                if not profile:
+                    continue
+
+                name = profile.get("name") or names.get(ticker) or row["name"]
+                raw_sector = profile.get("finnhubIndustry")
+                sector = FINNHUB_SECTOR_TO_GICS.get(raw_sector, None) if raw_sector else None
+                market_cap = market_caps.get(ticker)
+                if profile.get("marketCapitalization") is not None:
+                    market_cap = float(profile["marketCapitalization"]) * 1_000_000
+
+                if name:
+                    names[ticker] = name
+                if sector:
+                    sectors[ticker] = sector
+                if market_cap is not None:
+                    market_caps[ticker] = market_cap
+
+                metadata_rows.append(
+                    {
+                        "ticker": ticker,
+                        "name": name,
+                        "sector": sector or sectors.get(ticker) or row["sector"],
+                        "market_cap": market_cap,
+                    }
+                )
             except Exception:
                 continue
 
-        # 시총 반영
-        df["market_cap"] = df["ticker"].map(market_caps)
-        return df
+        if metadata_rows:
+            self._upsert_metadata(metadata_rows)
+
+        return self._apply_metadata_to_df(df, names, sectors, market_caps)
 
 
 class USCollector(FinnhubCollector):

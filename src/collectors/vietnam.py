@@ -11,6 +11,18 @@ import pandas as pd
 
 from src.collectors.base import BaseCollector
 from src.collectors.date_utils import compute_period_return_from_closes
+from src.config import (
+    VN_INCREMENTAL_ABNORMAL_LOOKBACK_DAYS,
+    VN_INCREMENTAL_FULL_REFRESH_WEEKDAY,
+    VN_INCREMENTAL_LARGE_CAP_COUNT,
+    VN_INCREMENTAL_MIN_CANDIDATES,
+    VN_INCREMENTAL_STALE_AFTER_DAYS,
+)
+from src.database import (
+    get_connection,
+    get_instrument_universe,
+    get_recent_abnormal_tickers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +70,102 @@ VN_SECTOR_MAP = {
 class VietnamCollector(BaseCollector):
     country_code = "VN"
 
+    def _select_listing_candidates(
+        self,
+        listing: pd.DataFrame,
+        date: str,
+    ) -> pd.DataFrame:
+        """Use the latest active universe on weekdays and full rebuild weekly."""
+        ticker_col = "ticker" if "ticker" in listing.columns else "symbol"
+        if ticker_col not in listing.columns:
+            return listing
+
+        try:
+            requested_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            return listing
+
+        refresh_weekday = VN_INCREMENTAL_FULL_REFRESH_WEEKDAY.get(self.country_code)
+        if (
+            refresh_weekday is not None
+            and requested_date.weekday() == refresh_weekday
+        ):
+            logger.info("[VN] weekly full rebuild day, skipping incremental filter")
+            return listing
+
+        try:
+            conn = get_connection()
+            try:
+                universe_rows = get_instrument_universe(conn, self.country_code)
+                abnormal_tickers = set(
+                    get_recent_abnormal_tickers(
+                        conn,
+                        self.country_code,
+                        date,
+                        lookback_days=VN_INCREMENTAL_ABNORMAL_LOOKBACK_DAYS,
+                    )
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning(f"[VN] incremental universe unavailable, use full rebuild: {exc}")
+            return listing
+
+        if not universe_rows:
+            logger.info("[VN] cached universe missing, use full rebuild")
+            return listing
+
+        latest_seen_date = max(
+            (row.get("last_seen_date") for row in universe_rows if row.get("last_seen_date")),
+            default=None,
+        )
+        if latest_seen_date:
+            try:
+                stale_days = (
+                    requested_date - datetime.strptime(latest_seen_date, "%Y-%m-%d")
+                ).days
+            except ValueError:
+                stale_days = 0
+            if stale_days > VN_INCREMENTAL_STALE_AFTER_DAYS:
+                logger.info("[VN] cached universe is stale, use full rebuild")
+                return listing
+
+        active_tickers = {
+            row["ticker"]
+            for row in universe_rows
+            if row.get("ticker")
+            and int(row.get("last_is_filtered") or 0) == 0
+            and int(row.get("last_is_abnormal") or 0) == 0
+        }
+        large_cap_tickers = {
+            row["ticker"]
+            for row in sorted(
+                universe_rows,
+                key=lambda row: float(row.get("market_cap") or 0.0),
+                reverse=True,
+            )[:VN_INCREMENTAL_LARGE_CAP_COUNT]
+            if row.get("ticker")
+        }
+        candidate_tickers = active_tickers | abnormal_tickers | large_cap_tickers
+        if not candidate_tickers:
+            logger.info("[VN] incremental universe empty, use full rebuild")
+            return listing
+
+        filtered_listing = listing[listing[ticker_col].isin(candidate_tickers)].copy()
+        min_candidates = min(len(listing), VN_INCREMENTAL_MIN_CANDIDATES)
+        if len(filtered_listing) < min_candidates:
+            logger.info(
+                f"[VN] incremental universe too small ({len(filtered_listing)}), use full rebuild"
+            )
+            return listing
+
+        logger.info(
+            f"[VN] incremental universe {len(listing)} -> {len(filtered_listing)} "
+            f"(active={len(active_tickers)}, abnormal={len(abnormal_tickers)}, "
+            f"large_cap={len(large_cap_tickers)})"
+        )
+        return filtered_listing
+
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
         """HOSE + HNX 전종목 수집 via vnstock."""
         try:
@@ -79,6 +187,8 @@ class VietnamCollector(BaseCollector):
                 return pd.DataFrame()
 
             logger.info(f"[VN] 전체 종목: {len(listing)}개")
+            listing = self._select_listing_candidates(listing, date)
+            logger.info(f"[VN] 수집 대상: {len(listing)}개")
 
             # 2) 각 종목의 일간 데이터 수집
             rows = []

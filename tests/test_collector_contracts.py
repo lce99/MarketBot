@@ -203,7 +203,7 @@ class CollectorContractTests(unittest.TestCase):
             return_value=build_download_frame(fixture["prices"]),
         ):
             with patch.object(collector, "_prefilter_stocks", side_effect=lambda stocks, _date: stocks):
-                with patch.object(collector, "_add_market_caps", side_effect=lambda df: df):
+                with patch.object(collector, "_add_market_caps", side_effect=lambda df, _date: df):
                     with patch("src.collectors.finnhub_collector.time.sleep", return_value=None):
                         actual = collector.fetch_all_stocks("2026-04-20")
 
@@ -250,7 +250,9 @@ class CollectorContractTests(unittest.TestCase):
             with patch("src.collectors.yfinance_collector.yf.Ticker", side_effect=FakeTicker):
                 with patch("src.collectors.yfinance_collector.time.sleep", return_value=None):
                     collector = YfinanceCollector("JP", ["6758.T", "8306.T"])
-                    actual = collector.fetch_all_stocks("2026-04-20")
+                    with patch.object(collector, "_get_cached_metadata", return_value={}):
+                        with patch.object(collector, "_upsert_metadata", return_value=None):
+                            actual = collector.fetch_all_stocks("2026-04-20")
 
         self.assertEqual(collector.effective_date, "2026-04-20")
         self.assert_contract_frame(
@@ -307,7 +309,12 @@ class CollectorContractTests(unittest.TestCase):
         with patch.dict(sys.modules, {"vnstock": fake_vnstock}):
             with patch("src.collectors.vietnam.time.sleep", return_value=None):
                 collector = VietnamCollector()
-                actual = collector.fetch_all_stocks("2026-04-20")
+                with patch.object(
+                    collector,
+                    "_select_listing_candidates",
+                    side_effect=lambda listing, _date: listing,
+                ):
+                    actual = collector.fetch_all_stocks("2026-04-20")
 
         self.assertEqual(collector.effective_date, "2026-04-20")
         self.assert_contract_frame(

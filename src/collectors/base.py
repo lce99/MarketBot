@@ -8,14 +8,20 @@ from datetime import datetime
 
 import pandas as pd
 
-from src.config import COUNTRIES
+from src.config import (
+    COUNTRIES,
+    INSTRUMENT_METADATA_REFRESH_WEEKDAY,
+    INSTRUMENT_METADATA_STALE_AFTER_DAYS,
+)
 from src.database import (
     get_connection,
+    get_instrument_metadata,
     get_raw_connection,
     init_db,
     init_raw_db,
     log_collection,
     replace_abnormal_stocks,
+    upsert_instrument_metadata,
     upsert_instrument_universe,
     upsert_sector_performance,
     upsert_stock_daily,
@@ -29,6 +35,7 @@ class BaseCollector(ABC):
     """Abstract base class for market data collectors."""
 
     country_code: str
+    metadata_source: str = ""
 
     @abstractmethod
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
@@ -126,6 +133,64 @@ class BaseCollector(ABC):
         finally:
             summary_conn.close()
             raw_conn.close()
+
+    def _is_metadata_refresh_due(self, date: str) -> bool:
+        """Return True when the weekly metadata refresh should run."""
+        weekday = INSTRUMENT_METADATA_REFRESH_WEEKDAY.get(self.country_code)
+        if weekday is None:
+            return False
+
+        try:
+            requested_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            return False
+
+        return requested_date.weekday() == weekday
+
+    def _metadata_row_is_fresh(self, row: dict, date: str) -> bool:
+        """Check whether cached metadata is still fresh enough to reuse."""
+        refreshed_at = row.get("last_refreshed_at")
+        if not refreshed_at:
+            return False
+
+        try:
+            requested_date = datetime.strptime(date, "%Y-%m-%d")
+            refreshed = datetime.fromisoformat(refreshed_at)
+        except ValueError:
+            return False
+
+        age_days = (requested_date.date() - refreshed.date()).days
+        return age_days <= INSTRUMENT_METADATA_STALE_AFTER_DAYS
+
+    def _get_cached_metadata(self, tickers: list[str]) -> dict[str, dict]:
+        """Load cached instrument metadata for the current market."""
+        if not tickers:
+            return {}
+
+        conn = get_connection()
+        try:
+            rows = get_instrument_metadata(conn, self.country_code, tickers=tickers)
+        finally:
+            conn.close()
+
+        return {row["ticker"]: row for row in rows}
+
+    def _upsert_metadata(self, rows: list[dict], source: str | None = None) -> None:
+        """Persist refreshed metadata rows for later reuse."""
+        if not rows:
+            return
+
+        conn = get_connection()
+        try:
+            upsert_instrument_metadata(
+                conn,
+                self.country_code,
+                rows,
+                source=source or self.metadata_source or self.country_code.lower(),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _aggregate_sectors(
         self,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from src.config import DATA_DIR, DB_PATH, RAW_DB_PATH
@@ -118,6 +118,18 @@ def init_db() -> None:
             UNIQUE(country, ticker)
         );
 
+        CREATE TABLE IF NOT EXISTS instrument_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            country TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            name TEXT,
+            sector TEXT,
+            market_cap REAL,
+            source TEXT,
+            last_refreshed_at TEXT NOT NULL,
+            UNIQUE(country, ticker)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_sector_perf_date
             ON sector_performance(date);
         CREATE INDEX IF NOT EXISTS idx_sector_perf_country
@@ -134,6 +146,8 @@ def init_db() -> None:
             ON trend_scores(date);
         CREATE INDEX IF NOT EXISTS idx_universe_country
             ON instrument_universe(country, last_seen_date);
+        CREATE INDEX IF NOT EXISTS idx_metadata_country
+            ON instrument_metadata(country, last_refreshed_at);
         """
     )
     conn.commit()
@@ -422,6 +436,51 @@ def upsert_instrument_universe(
     )
 
 
+def upsert_instrument_metadata(
+    conn: sqlite3.Connection,
+    country: str,
+    rows: list[dict],
+    source: str,
+) -> None:
+    """Persist slowly changing instrument metadata for reuse across runs."""
+    if not rows:
+        return
+
+    refreshed_at = datetime.utcnow().isoformat()
+    metadata_rows = [
+        {
+            "country": country,
+            "ticker": row["ticker"],
+            "name": row.get("name"),
+            "sector": row.get("sector"),
+            "market_cap": row.get("market_cap"),
+            "source": source,
+            "last_refreshed_at": refreshed_at,
+        }
+        for row in rows
+    ]
+
+    conn.executemany(
+        """
+        INSERT INTO instrument_metadata (
+            country, ticker, name, sector, market_cap,
+            source, last_refreshed_at
+        )
+        VALUES (
+            :country, :ticker, :name, :sector, :market_cap,
+            :source, :last_refreshed_at
+        )
+        ON CONFLICT(country, ticker) DO UPDATE SET
+            name = excluded.name,
+            sector = excluded.sector,
+            market_cap = excluded.market_cap,
+            source = excluded.source,
+            last_refreshed_at = excluded.last_refreshed_at
+        """,
+        metadata_rows,
+    )
+
+
 def replace_abnormal_stocks(
     conn: sqlite3.Connection,
     date: str,
@@ -659,6 +718,55 @@ def get_instrument_universe(
         (country,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_instrument_metadata(
+    conn: sqlite3.Connection,
+    country: str,
+    tickers: Optional[list[str]] = None,
+) -> list[dict]:
+    """Return cached instrument metadata for one market."""
+    query = """
+        SELECT *
+        FROM instrument_metadata
+        WHERE country = ?
+    """
+    params: list[object] = [country]
+
+    if tickers is not None:
+        if not tickers:
+            return []
+        placeholders = ", ".join("?" for _ in tickers)
+        query += f" AND ticker IN ({placeholders})"
+        params.extend(tickers)
+
+    query += " ORDER BY last_refreshed_at DESC, ticker"
+    rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_recent_abnormal_tickers(
+    conn: sqlite3.Connection,
+    country: str,
+    end_date: str,
+    lookback_days: int = 5,
+) -> list[str]:
+    """Return tickers that recently showed abnormal moves in one market."""
+    start_date = (
+        datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=lookback_days)
+    ).strftime("%Y-%m-%d")
+    rows = conn.execute(
+        """
+        SELECT ticker
+        FROM abnormal_stock_summary
+        WHERE country = ?
+          AND date BETWEEN ? AND ?
+        GROUP BY ticker
+        ORDER BY MAX(date) DESC, MAX(ABS(daily_return)) DESC, ticker
+        """,
+        (country, start_date, end_date),
+    ).fetchall()
+    return [row["ticker"] for row in rows]
 
 
 def get_recent_collection_logs(

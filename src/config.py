@@ -131,6 +131,25 @@ UNIVERSE_PREFILTER_FULL_REFRESH_WEEKDAY = {
     "US": 0,
 }
 
+# Instrument metadata (name/sector/market cap) changes slowly, so refresh it
+# weekly and otherwise reuse the cache.
+INSTRUMENT_METADATA_REFRESH_WEEKDAY = {
+    "US": 0,
+    "JP": 0,
+    "DE": 0,
+    "IN": 0,
+}
+INSTRUMENT_METADATA_STALE_AFTER_DAYS = 10
+
+# Vietnam incremental collection: daily candidate subset + weekly full rebuild.
+VN_INCREMENTAL_FULL_REFRESH_WEEKDAY = {
+    "VN": 0,
+}
+VN_INCREMENTAL_STALE_AFTER_DAYS = 10
+VN_INCREMENTAL_LARGE_CAP_COUNT = 50
+VN_INCREMENTAL_ABNORMAL_LOOKBACK_DAYS = 5
+VN_INCREMENTAL_MIN_CANDIDATES = 60
+
 # ── 벤치마크 티커 (yfinance) ──
 BENCHMARK_TICKERS = {
     # 미국 섹터 ETF
