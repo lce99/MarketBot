@@ -1,4 +1,6 @@
-"""BaseCollector - 모든 국가별 수집기의 베이스 클래스"""
+"""Base collector shared by all market-specific collectors."""
+
+from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
@@ -9,8 +11,11 @@ import pandas as pd
 from src.config import COUNTRIES
 from src.database import (
     get_connection,
+    get_raw_connection,
     init_db,
+    init_raw_db,
     log_collection,
+    replace_abnormal_stocks,
     upsert_sector_performance,
     upsert_stock_daily,
 )
@@ -20,116 +25,113 @@ logger = logging.getLogger(__name__)
 
 
 class BaseCollector(ABC):
-    """국가별 수집기의 추상 베이스 클래스.
+    """Abstract base class for market data collectors."""
 
-    서브클래스는 country_code와 fetch_all_stocks()를 구현해야 함.
-    """
-
-    country_code: str  # "US", "KR", "CN", ...
+    country_code: str
 
     @abstractmethod
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
-        """해당 시장의 전체 종목 데이터를 수집.
-
-        Returns:
-            DataFrame 필수 컬럼:
-                ticker, name, sector, market_cap,
-                close_price, daily_return, weekly_return,
-                volume, avg_volume_20d
-        """
-        ...
+        """Fetch all stocks for the market and return them as a DataFrame."""
+        raise NotImplementedError
 
     def run(self, date: str | None = None) -> bool:
-        """수집 → 필터 → 섹터 집계 → DB 저장 전체 파이프라인 실행.
-
-        Returns:
-            정상 저장까지 완료하면 True, 데이터가 비어 실패하면 False.
-        """
+        """Run the end-to-end collection pipeline for one market."""
         if date is None:
             date = datetime.utcnow().strftime("%Y-%m-%d")
         self.effective_date = date
 
         country = self.country_code
         info = COUNTRIES[country]
-        logger.info(f"[{info['flag']} {info['name_kr']}] 수집 시작: {date}")
+        logger.info(f"[{info['flag']} {info['name_kr']}] collection started: {date}")
 
         init_db()
-        conn = get_connection()
+        init_raw_db()
+        summary_conn = get_connection()
+        raw_conn = get_raw_connection()
 
         try:
-            # 1) 전종목 수집
             df = self.fetch_all_stocks(date)
             if df.empty:
-                log_collection(conn, country, "failed", error="데이터 없음")
-                conn.commit()
-                logger.warning(f"[{country}] 데이터 없음")
+                log_collection(summary_conn, country, "failed", error="데이터 없음")
+                summary_conn.commit()
+                logger.warning(f"[{country}] no data returned")
                 return False
 
             effective_date = getattr(self, "effective_date", date)
             if effective_date != date:
                 logger.warning(
-                    f"[{country}] 요청일 {date} 대신 실제 거래일 {effective_date} 데이터 사용"
+                    f"[{country}] requested {date}, using trading date {effective_date}"
                 )
 
             total = len(df)
-            logger.info(f"[{country}] 수집 완료: {total}개 종목")
+            logger.info(f"[{country}] fetched {total} stocks")
 
-            # 2) 필터 적용
             df = apply_filters(df, country)
             filtered_count = int(df["is_filtered"].sum())
             abnormal_count = int(df["is_abnormal"].sum())
             logger.info(
-                f"[{country}] 필터: {filtered_count}개 제외, "
-                f"{abnormal_count}개 비정상"
+                f"[{country}] filtered {filtered_count} stocks, "
+                f"abnormal {abnormal_count} stocks"
             )
 
-            # 3) 개별 종목 DB 저장
             stock_rows = []
             for _, row in df.iterrows():
-                stock_rows.append({
-                    "date": effective_date,
-                    "ticker": row["ticker"],
-                    "name": row.get("name", ""),
-                    "country": country,
-                    "sector": row.get("sector", "기타"),
-                    "market_cap": row.get("market_cap"),
-                    "close_price": row.get("close_price"),
-                    "daily_return": row.get("daily_return"),
-                    "volume": row.get("volume"),
-                    "avg_volume_20d": row.get("avg_volume_20d"),
-                    "is_filtered": int(row.get("is_filtered", 0)),
-                    "is_abnormal": int(row.get("is_abnormal", 0)),
-                })
-            upsert_stock_daily(conn, stock_rows)
+                stock_rows.append(
+                    {
+                        "date": effective_date,
+                        "ticker": row["ticker"],
+                        "name": row.get("name", ""),
+                        "country": country,
+                        "sector": row.get("sector", "기타"),
+                        "market_cap": row.get("market_cap"),
+                        "close_price": row.get("close_price"),
+                        "daily_return": row.get("daily_return"),
+                        "volume": row.get("volume"),
+                        "avg_volume_20d": row.get("avg_volume_20d"),
+                        "is_filtered": int(row.get("is_filtered", 0)),
+                        "is_abnormal": int(row.get("is_abnormal", 0)),
+                    }
+                )
 
-            # 4) 섹터별 집계 (필터 통과 + 비정상 아닌 종목만)
+            upsert_stock_daily(raw_conn, stock_rows)
+            replace_abnormal_stocks(summary_conn, effective_date, country, stock_rows)
+
             active = df[(df["is_filtered"] == 0) & (df["is_abnormal"] == 0)]
             sector_rows = self._aggregate_sectors(active, effective_date, country)
-            upsert_sector_performance(conn, sector_rows)
+            upsert_sector_performance(summary_conn, sector_rows)
 
-            # 5) 수집 로그
             log_collection(
-                conn, country, "success",
-                total=total, filtered=filtered_count, abnormal=abnormal_count,
+                summary_conn,
+                country,
+                "success",
+                total=total,
+                filtered=filtered_count,
+                abnormal=abnormal_count,
             )
-            conn.commit()
+            raw_conn.commit()
+            summary_conn.commit()
             logger.info(
-                f"[{country}] 저장 완료: "
-                f"{len(sector_rows)}개 섹터, {len(stock_rows)}개 종목"
+                f"[{country}] saved {len(sector_rows)} sectors and "
+                f"{len(stock_rows)} stocks"
             )
             return True
 
-        except Exception as e:
-            log_collection(conn, country, "failed", error=str(e))
-            conn.commit()
-            logger.error(f"[{country}] 수집 실패: {e}", exc_info=True)
+        except Exception as exc:
+            log_collection(summary_conn, country, "failed", error=str(exc))
+            summary_conn.commit()
+            logger.error(f"[{country}] collection failed: {exc}", exc_info=True)
             raise
         finally:
-            conn.close()
+            summary_conn.close()
+            raw_conn.close()
 
-    def _aggregate_sectors(self, df: pd.DataFrame, date: str,
-                           country: str) -> list[dict]:
-        """필터 통과 종목들을 섹터별로 집계."""
+    def _aggregate_sectors(
+        self,
+        df: pd.DataFrame,
+        date: str,
+        country: str,
+    ) -> list[dict]:
+        """Aggregate filtered stocks into sector-level rows."""
         now = datetime.utcnow().isoformat()
         results = []
 
@@ -139,7 +141,11 @@ class BaseCollector(ABC):
 
             daily_returns = group["daily_return"].dropna()
             avg_return = float(daily_returns.mean()) if len(daily_returns) > 0 else 0.0
-            breadth = float((daily_returns > 0).sum() / len(daily_returns)) if len(daily_returns) > 0 else 0.0
+            breadth = (
+                float((daily_returns > 0).sum() / len(daily_returns))
+                if len(daily_returns) > 0
+                else 0.0
+            )
 
             weekly_returns = (
                 group["weekly_return"].dropna()
@@ -147,12 +153,9 @@ class BaseCollector(ABC):
                 else pd.Series(dtype=float)
             )
             avg_weekly_return = (
-                float(weekly_returns.mean())
-                if len(weekly_returns) > 0
-                else None
+                float(weekly_returns.mean()) if len(weekly_returns) > 0 else None
             )
 
-            # 거래량 변화율 (avg_volume_20d 대비)
             vol_change = 0.0
             if "volume" in group.columns and "avg_volume_20d" in group.columns:
                 valid = group.dropna(subset=["volume", "avg_volume_20d"])
@@ -161,31 +164,36 @@ class BaseCollector(ABC):
                     ratio = valid["volume"] / valid["avg_volume_20d"]
                     vol_change = float((ratio.mean() - 1) * 100)
 
-            # 상위 상승/하락 종목
-            sorted_g = group.dropna(subset=["daily_return"]).sort_values(
+            sorted_group = group.dropna(subset=["daily_return"]).sort_values(
                 "daily_return", ascending=False
             )
             top_gainers = [
-                {"name": r["name"], "return": round(r["daily_return"], 2)}
-                for _, r in sorted_g.head(3).iterrows()
+                {"name": row["name"], "return": round(row["daily_return"], 2)}
+                for _, row in sorted_group.head(3).iterrows()
             ]
             top_losers = [
-                {"name": r["name"], "return": round(r["daily_return"], 2)}
-                for _, r in sorted_g.tail(3).iterrows()
+                {"name": row["name"], "return": round(row["daily_return"], 2)}
+                for _, row in sorted_group.tail(3).iterrows()
             ]
 
-            results.append({
-                "date": date,
-                "country": country,
-                "sector": sector,
-                "daily_return": round(avg_return, 4),
-                "weekly_return": round(avg_weekly_return, 4) if avg_weekly_return is not None else None,
-                "breadth": round(breadth, 4),
-                "volume_change": round(vol_change, 2),
-                "stock_count": len(group),
-                "top_gainers": top_gainers,
-                "top_losers": top_losers,
-                "collected_at": now,
-            })
+            results.append(
+                {
+                    "date": date,
+                    "country": country,
+                    "sector": sector,
+                    "daily_return": round(avg_return, 4),
+                    "weekly_return": (
+                        round(avg_weekly_return, 4)
+                        if avg_weekly_return is not None
+                        else None
+                    ),
+                    "breadth": round(breadth, 4),
+                    "volume_change": round(vol_change, 2),
+                    "stock_count": len(group),
+                    "top_gainers": top_gainers,
+                    "top_losers": top_losers,
+                    "collected_at": now,
+                }
+            )
 
         return results

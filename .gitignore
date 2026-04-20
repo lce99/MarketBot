@@ -11,4 +11,5 @@ venv/
 *.db-journal
 *.db-wal
 *.db-shm
+data/marketbot_raw.db
 .claude/

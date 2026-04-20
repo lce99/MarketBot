@@ -77,7 +77,16 @@ jobs:
       - name: Checkpoint database
         run: python -m scripts.checkpoint_db
 
-      - name: Commit database
+      - name: Upload raw database artifact
+        if: steps.market.outputs.market != 'BENCHMARK'
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketbot-raw-db-${{ github.run_id }}-${{ steps.market.outputs.market }}
+          path: data/marketbot_raw.db
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Commit summary database
         run: |
           git config user.name "MarketBot"
           git config user.email "marketbot@github.com"

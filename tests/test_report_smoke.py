@@ -14,10 +14,12 @@ class ReportSmokeTests(unittest.TestCase):
         self.data_dir = Path(self.tempdir.name) / "data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "marketbot.db"
+        self.raw_db_path = self.data_dir / "marketbot_raw.db"
 
         self.patchers = [
             patch.object(database, "DATA_DIR", self.data_dir),
             patch.object(database, "DB_PATH", self.db_path),
+            patch.object(database, "RAW_DB_PATH", self.raw_db_path),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -128,8 +130,10 @@ class ReportSmokeTests(unittest.TestCase):
             ],
         )
 
-        database.upsert_stock_daily(
+        database.replace_abnormal_stocks(
             conn,
+            "2026-04-20",
+            "KR",
             [
                 {
                     "date": "2026-04-20",

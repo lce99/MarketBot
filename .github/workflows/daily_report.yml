@@ -28,7 +28,7 @@ jobs:
       - name: Checkpoint database
         run: python -m scripts.checkpoint_db
 
-      - name: Commit report data
+      - name: Commit summary report data
         run: |
           git config user.name "MarketBot"
           git config user.email "marketbot@github.com"
