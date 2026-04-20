@@ -34,7 +34,8 @@ class BaseCollector(ABC):
         Returns:
             DataFrame 필수 컬럼:
                 ticker, name, sector, market_cap,
-                close_price, daily_return, volume, avg_volume_20d
+                close_price, daily_return, weekly_return,
+                volume, avg_volume_20d
         """
         ...
 
@@ -140,6 +141,17 @@ class BaseCollector(ABC):
             avg_return = float(daily_returns.mean()) if len(daily_returns) > 0 else 0.0
             breadth = float((daily_returns > 0).sum() / len(daily_returns)) if len(daily_returns) > 0 else 0.0
 
+            weekly_returns = (
+                group["weekly_return"].dropna()
+                if "weekly_return" in group.columns
+                else pd.Series(dtype=float)
+            )
+            avg_weekly_return = (
+                float(weekly_returns.mean())
+                if len(weekly_returns) > 0
+                else None
+            )
+
             # 거래량 변화율 (avg_volume_20d 대비)
             vol_change = 0.0
             if "volume" in group.columns and "avg_volume_20d" in group.columns:
@@ -167,7 +179,7 @@ class BaseCollector(ABC):
                 "country": country,
                 "sector": sector,
                 "daily_return": round(avg_return, 4),
-                "weekly_return": None,  # 주간은 analyzer에서 계산
+                "weekly_return": round(avg_weekly_return, 4) if avg_weekly_return is not None else None,
                 "breadth": round(breadth, 4),
                 "volume_change": round(vol_change, 2),
                 "stock_count": len(group),

@@ -78,7 +78,11 @@ def compute_trend_scores(date: str | None = None):
         norm_breadth = (breadth - 0.5) * 200  # 50%=0, 100%=100, 0%=-100
 
         # 5) 주간 모멘텀 (weekly_return이 있으면 사용, 없으면 0)
-        weekly_returns = [e["weekly_return"] for e in entries if e.get("weekly_return")]
+        weekly_returns = [
+            e["weekly_return"]
+            for e in entries
+            if e.get("weekly_return") is not None
+        ]
         if weekly_returns:
             avg_weekly = sum(weekly_returns) / len(weekly_returns)
             norm_momentum = max(min(avg_weekly / 10.0 * 100, 100), -100)

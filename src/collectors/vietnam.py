@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from src.collectors.base import BaseCollector
+from src.collectors.date_utils import compute_period_return_from_closes
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class VietnamCollector(BaseCollector):
         try:
             stock = Vnstock()
             target_date = datetime.strptime(date, "%Y-%m-%d")
-            start_date = (target_date - timedelta(days=7)).strftime("%Y-%m-%d")
+            start_date = (target_date - timedelta(days=14)).strftime("%Y-%m-%d")
             end_date = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
 
             # 1) 전종목 리스트
@@ -108,6 +109,7 @@ class VietnamCollector(BaseCollector):
                         else None
                     )
                     daily_return = self._compute_daily_return(hist)
+                    weekly_return = self._compute_weekly_return(hist)
                     avg_volume_20d = self._compute_avg_volume(hist)
 
                     # 섹터
@@ -133,6 +135,7 @@ class VietnamCollector(BaseCollector):
                         "market_cap": market_cap,
                         "close_price": close_price,
                         "daily_return": daily_return,
+                        "weekly_return": weekly_return,
                         "volume": volume,
                         "avg_volume_20d": avg_volume_20d,
                     })
@@ -179,15 +182,15 @@ class VietnamCollector(BaseCollector):
             return None
 
         valid = hist.dropna(subset=["close"])
-        if len(valid) < 2:
+        return compute_period_return_from_closes(valid["close"].tolist(), periods_back=1)
+
+    def _compute_weekly_return(self, hist: pd.DataFrame) -> float | None:
+        """종가 기준 주간 수익률을 계산한다."""
+        if "close" not in hist.columns:
             return None
 
-        latest_close = float(valid.iloc[-1]["close"])
-        prev_close = float(valid.iloc[-2]["close"])
-        if prev_close <= 0:
-            return None
-
-        return ((latest_close - prev_close) / prev_close) * 100
+        valid = hist.dropna(subset=["close"])
+        return compute_period_return_from_closes(valid["close"].tolist(), periods_back=5)
 
     def _compute_avg_volume(self, hist: pd.DataFrame) -> float | None:
         """최근 20거래일 평균 거래량을 계산한다."""

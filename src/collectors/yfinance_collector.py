@@ -12,6 +12,7 @@ import pandas as pd
 import yfinance as yf
 
 from src.collectors.base import BaseCollector
+from src.collectors.date_utils import compute_period_return_from_closes
 from src.config import SECTOR_EN_TO_KR
 
 logger = logging.getLogger(__name__)
@@ -156,7 +157,7 @@ class YfinanceCollector(BaseCollector):
         logger.info(f"[{self.country_code}] yfinance 수집 시작: {len(tickers)}개 종목")
 
         dt = datetime.strptime(date, "%Y-%m-%d")
-        start_date = (dt - timedelta(days=5)).strftime("%Y-%m-%d")
+        start_date = (dt - timedelta(days=14)).strftime("%Y-%m-%d")
         end_date = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
 
         batch_size = 200
@@ -206,6 +207,9 @@ class YfinanceCollector(BaseCollector):
                             prev_close = float(valid_data.iloc[-2]["Close"])
                             if prev_close > 0:
                                 daily_return = ((close_price - prev_close) / prev_close) * 100
+                        weekly_return = compute_period_return_from_closes(
+                            valid_data["Close"].tolist()
+                        )
 
                         avg_volume_20d = None
                         valid_volume = ticker_data["Volume"].dropna().tail(20)
@@ -219,6 +223,7 @@ class YfinanceCollector(BaseCollector):
                             "market_cap": None,
                             "close_price": close_price,
                             "daily_return": daily_return,
+                            "weekly_return": weekly_return,
                             "volume": volume,
                             "avg_volume_20d": avg_volume_20d,
                         })

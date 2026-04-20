@@ -7,7 +7,7 @@ import pandas as pd
 from pykrx import stock as krx
 
 from src.collectors.base import BaseCollector
-from src.collectors.date_utils import recent_dates
+from src.collectors.date_utils import compute_return_pct, recent_dates
 from src.config import KR_SECTOR_MAP
 
 logger = logging.getLogger(__name__)
@@ -49,9 +49,14 @@ class KoreaCollector(BaseCollector):
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
         """KOSPI + KOSDAQ 전종목 일간 데이터 수집."""
         for date_fmt in self._candidate_trading_dates(date):
+            weekly_reference_date = self._resolve_weekly_reference_date(date_fmt)
             all_data = []
             for market in ["KOSPI", "KOSDAQ"]:
-                df = self._fetch_market(date_fmt, market)
+                df = self._fetch_market(
+                    date_fmt,
+                    market,
+                    weekly_reference_date=weekly_reference_date,
+                )
                 if df is not None and not df.empty:
                     all_data.append(df)
 
@@ -70,10 +75,14 @@ class KoreaCollector(BaseCollector):
 
     def _candidate_trading_dates(self, date: str) -> list[str]:
         """요청일 기준 최근 거래일 후보를 중복 없이 반환."""
+        return self._recent_trading_dates(date, lookback_days=7)
+
+    def _recent_trading_dates(self, date: str, lookback_days: int) -> list[str]:
+        """요청일 기준 최근 거래일 후보를 중복 없이 반환."""
         candidates: list[str] = []
         seen: set[str] = set()
 
-        for raw_date in recent_dates(date, lookback_days=7):
+        for raw_date in recent_dates(date, lookback_days=lookback_days):
             compact = raw_date.replace("-", "")
             try:
                 business_date = krx.get_nearest_business_day_in_a_week(compact)
@@ -86,7 +95,23 @@ class KoreaCollector(BaseCollector):
 
         return candidates
 
-    def _fetch_market(self, date_fmt: str, market: str) -> pd.DataFrame | None:
+    def _resolve_weekly_reference_date(self, date_fmt: str) -> str | None:
+        """현재 거래일 대비 약 5거래일 전 날짜를 반환."""
+        iso_date = f"{date_fmt[:4]}-{date_fmt[4:6]}-{date_fmt[6:8]}"
+        recent_trading_dates = self._recent_trading_dates(iso_date, lookback_days=21)
+        if len(recent_trading_dates) <= 1:
+            return None
+
+        idx = min(5, len(recent_trading_dates) - 1)
+        reference_date = recent_trading_dates[idx]
+        return reference_date if reference_date != date_fmt else None
+
+    def _fetch_market(
+        self,
+        date_fmt: str,
+        market: str,
+        weekly_reference_date: str | None = None,
+    ) -> pd.DataFrame | None:
         """특정 시장 전종목 데이터 수집."""
         try:
             # 1) 전종목 OHLCV (등락률, 시가총액 포함)
@@ -95,6 +120,14 @@ class KoreaCollector(BaseCollector):
                 logger.warning(f"[KR] {market} 데이터 없음 ({date_fmt})")
                 return None
             time.sleep(1)
+
+            weekly_reference = None
+            if weekly_reference_date:
+                weekly_reference = krx.get_market_ohlcv(
+                    weekly_reference_date,
+                    market=market,
+                )
+                time.sleep(0.5)
 
             # 2) 업종 인덱스 → 종목별 섹터 매핑
             sector_map = self._build_sector_map(date_fmt, market)
@@ -114,6 +147,14 @@ class KoreaCollector(BaseCollector):
                         if "등락률" in ohlcv.columns
                         else None
                     )
+                    weekly_return = None
+                    if (
+                        weekly_reference is not None
+                        and ticker in weekly_reference.index
+                        and "종가" in weekly_reference.columns
+                    ):
+                        prev_close = float(weekly_reference.loc[ticker]["종가"])
+                        weekly_return = compute_return_pct(close_price, prev_close)
                     market_cap = (
                         float(row_data["시가총액"])
                         if "시가총액" in ohlcv.columns
@@ -133,6 +174,7 @@ class KoreaCollector(BaseCollector):
                         "market_cap": market_cap,
                         "close_price": close_price,
                         "daily_return": daily_return,
+                        "weekly_return": weekly_return,
                         "volume": volume,
                         "avg_volume_20d": None,
                     })

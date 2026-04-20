@@ -11,7 +11,7 @@ from datetime import datetime
 import pandas as pd
 
 from src.collectors.base import BaseCollector
-from src.collectors.date_utils import recent_dates
+from src.collectors.date_utils import compute_return_pct, recent_dates
 from src.config import TUSHARE_TOKEN
 
 logger = logging.getLogger(__name__)
@@ -74,16 +74,36 @@ class ChinaCollector(BaseCollector):
         pro = ts.pro_api()
 
         try:
-            # 1) 일간 데이터 (전종목). 요청일 데이터가 아직 없을 수 있어 최근 날짜를 역탐색
-            trade_date, df_daily = self._fetch_recent_daily(pro, date)
+            # 1) 최근 거래일 스냅샷 확보. 첫 번째는 현재, 여섯 번째는 주간 비교 기준
+            snapshots = self._fetch_recent_daily_snapshots(
+                pro,
+                date,
+                limit=6,
+                lookback_days=21,
+            )
+            if not snapshots:
+                logger.warning(f"[CN] 최근 21일 내 데이터 없음 ({date})")
+                return pd.DataFrame()
+
+            trade_date, df_daily = snapshots[0]
             if df_daily is None or df_daily.empty:
-                logger.warning(f"[CN] 최근 7일 내 데이터 없음 ({date})")
+                logger.warning(f"[CN] 최근 21일 내 데이터 없음 ({date})")
                 return pd.DataFrame()
             time.sleep(1)
 
             self.effective_date = datetime.strptime(
                 trade_date, "%Y%m%d"
             ).strftime("%Y-%m-%d")
+            weekly_reference = (
+                snapshots[min(5, len(snapshots) - 1)][1]
+                if len(snapshots) > 1
+                else pd.DataFrame()
+            )
+            weekly_close_map = {}
+            if weekly_reference is not None and not weekly_reference.empty:
+                weekly_close_map = (
+                    weekly_reference.set_index("ts_code")["close"].to_dict()
+                )
 
             # 2) 종목 기본정보 (이름, 업종)
             try:
@@ -135,6 +155,10 @@ class ChinaCollector(BaseCollector):
                 daily_return = None
                 if pd.notna(row.get("pct_chg")):
                     daily_return = float(row["pct_chg"])
+                weekly_return = compute_return_pct(
+                    row.get("close"),
+                    weekly_close_map.get(row["ts_code"]),
+                )
 
                 name = row.get("name", "")
                 if pd.isna(name) or not name:
@@ -147,6 +171,7 @@ class ChinaCollector(BaseCollector):
                     "market_cap": market_cap,
                     "close_price": float(row["close"]) if pd.notna(row.get("close")) else None,
                     "daily_return": daily_return,
+                    "weekly_return": weekly_return,
                     "volume": float(row["vol"]) if pd.notna(row.get("vol")) else None,
                     "avg_volume_20d": None,
                 })
@@ -159,9 +184,18 @@ class ChinaCollector(BaseCollector):
             logger.error(f"[CN] 수집 실패: {e}", exc_info=True)
             return pd.DataFrame()
 
-    def _fetch_recent_daily(self, pro, date: str) -> tuple[str | None, pd.DataFrame]:
-        """최근 며칠 내 실제로 데이터가 존재하는 거래일을 찾는다."""
-        for candidate in recent_dates(date, lookback_days=7):
+    def _fetch_recent_daily_snapshots(
+        self,
+        pro,
+        date: str,
+        limit: int = 6,
+        lookback_days: int = 21,
+    ) -> list[tuple[str, pd.DataFrame]]:
+        """최근 며칠 내 실제로 데이터가 존재하는 거래일 스냅샷을 모은다."""
+        snapshots: list[tuple[str, pd.DataFrame]] = []
+        seen: set[str] = set()
+
+        for candidate in recent_dates(date, lookback_days=lookback_days):
             candidate_fmt = candidate.replace("-", "")
             try:
                 df_daily = pro.daily(trade_date=candidate_fmt)
@@ -170,9 +204,16 @@ class ChinaCollector(BaseCollector):
                 time.sleep(1)
                 continue
 
-            if df_daily is not None and not df_daily.empty:
-                return candidate_fmt, df_daily
+            if (
+                df_daily is not None
+                and not df_daily.empty
+                and candidate_fmt not in seen
+            ):
+                snapshots.append((candidate_fmt, df_daily))
+                seen.add(candidate_fmt)
+                if len(snapshots) >= limit:
+                    break
 
             time.sleep(0.3)
 
-        return None, pd.DataFrame()
+        return snapshots

@@ -40,7 +40,7 @@ class ReportSmokeTests(unittest.TestCase):
                 "country": "US",
                 "sector": "정보기술",
                 "daily_return": 1.2,
-                "weekly_return": 4.5,
+                "weekly_return": 0.0,
                 "breadth": 0.75,
                 "volume_change": 8.0,
                 "stock_count": 120,
@@ -53,7 +53,7 @@ class ReportSmokeTests(unittest.TestCase):
                 "country": "KR",
                 "sector": "정보기술",
                 "daily_return": 0.4,
-                "weekly_return": 1.2,
+                "weekly_return": 10.0,
                 "breadth": 0.55,
                 "volume_change": 3.0,
                 "stock_count": 80,
@@ -120,6 +120,18 @@ class ReportSmokeTests(unittest.TestCase):
         conn.close()
 
         self.assertEqual(count, 2)
+
+    def test_prepare_report_data_averages_zero_weekly_returns(self) -> None:
+        report_script.prepare_report_data(date="2026-04-20")
+
+        conn = database.get_connection()
+        trend_score = conn.execute(
+            "SELECT trend_score FROM trend_scores WHERE date = ? AND sector = ?",
+            ("2026-04-20", "정보기술"),
+        ).fetchone()[0]
+        conn.close()
+
+        self.assertAlmostEqual(trend_score, 51.4, places=2)
 
     def test_format_daily_report_includes_core_sections(self) -> None:
         report_script.prepare_report_data(date="2026-04-20")

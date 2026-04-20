@@ -18,6 +18,7 @@ import pandas as pd
 import yfinance as yf
 
 from src.collectors.base import BaseCollector
+from src.collectors.date_utils import compute_period_return_from_closes
 from src.config import COUNTRIES, FINNHUB_API_KEY, SECTOR_EN_TO_KR
 
 logger = logging.getLogger(__name__)
@@ -124,9 +125,9 @@ class FinnhubCollector(BaseCollector):
 
         yfinance.download()은 한번에 수백개 티커를 처리 가능.
         """
-        # 시작일은 2일 전 (주말/휴일 고려)
+        # 5거래일 이상 확보하기 위해 2주치 데이터를 요청
         dt = datetime.strptime(date, "%Y-%m-%d")
-        start_date = (dt - timedelta(days=5)).strftime("%Y-%m-%d")
+        start_date = (dt - timedelta(days=14)).strftime("%Y-%m-%d")
 
         # 배치 크기: yfinance는 한번에 ~500개 처리 가능
         batch_size = 200
@@ -180,6 +181,9 @@ class FinnhubCollector(BaseCollector):
                             prev_close = float(valid_data.iloc[-2]["Close"])
                             if prev_close > 0:
                                 daily_return = ((close_price - prev_close) / prev_close) * 100
+                        weekly_return = compute_period_return_from_closes(
+                            valid_data["Close"].tolist()
+                        )
 
                         avg_volume_20d = None
                         valid_volume = ticker_data["Volume"].dropna().tail(20)
@@ -198,6 +202,7 @@ class FinnhubCollector(BaseCollector):
                             "market_cap": None,  # 나중에 별도 조회
                             "close_price": close_price,
                             "daily_return": daily_return,
+                            "weekly_return": weekly_return,
                             "volume": volume,
                             "avg_volume_20d": avg_volume_20d,
                         })
