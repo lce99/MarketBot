@@ -61,6 +61,31 @@ jobs:
           fi
           echo "market=${market^^}" >> $GITHUB_OUTPUT
 
+      - name: Validate required credentials
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+        run: |
+          requested="${{ steps.market.outputs.market }}"
+          if [ "$requested" = "ALL" ]; then
+            requested="US,KR,CN,JP,VN,IN,DE"
+          fi
+
+          normalized="$(echo "$requested" | tr '[:lower:]' '[:upper:]' | tr -d ' ')"
+          missing=""
+
+          if [[ ",$normalized," == *,US,* ]] && [ -z "$FINNHUB_API_KEY" ]; then
+            missing="${missing}\n- US requires FINNHUB_API_KEY"
+          fi
+          if [[ ",$normalized," == *,CN,* ]] && [ -z "$TUSHARE_TOKEN" ]; then
+            missing="${missing}\n- CN requires TUSHARE_TOKEN"
+          fi
+
+          if [ -n "$missing" ]; then
+            echo "Missing required workflow secrets:${missing}" >&2
+            exit 1
+          fi
+
       - name: Collect market data
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}

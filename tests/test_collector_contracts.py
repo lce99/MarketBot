@@ -286,15 +286,37 @@ class CollectorContractTests(unittest.TestCase):
     def test_vietnam_collector_contract_from_vnstock_fixtures(self) -> None:
         fixture = load_fixture("vietnam")
 
+        class FakeListing:
+            def __init__(self, source=None):
+                self.source = source
+
+            def all_symbols(self):
+                return pd.DataFrame(
+                    [
+                        {
+                            "symbol": row["ticker"],
+                            "organ_name": row["name"],
+                            "market_cap": row["market_cap"],
+                        }
+                        for row in fixture["listing"]
+                    ]
+                )
+
+            def symbols_by_industries(self):
+                return pd.DataFrame(
+                    [
+                        {
+                            "symbol": row["ticker"],
+                            "organ_name": row["name"],
+                            "industry_name": row["industry"],
+                            "market_cap": row["market_cap"],
+                        }
+                        for row in fixture["listing"]
+                    ]
+                )
+
         class FakeVnstock:
             def stock(self, symbol=None, source=None):
-                if symbol is None:
-                    return types.SimpleNamespace(
-                        listing=types.SimpleNamespace(
-                            all_symbols=lambda: pd.DataFrame(fixture["listing"])
-                        )
-                    )
-
                 return types.SimpleNamespace(
                     quote=types.SimpleNamespace(
                         history=lambda start, end, _symbol=symbol: pd.DataFrame(
@@ -305,6 +327,7 @@ class CollectorContractTests(unittest.TestCase):
 
         fake_vnstock = types.ModuleType("vnstock")
         fake_vnstock.Vnstock = FakeVnstock
+        fake_vnstock.Listing = FakeListing
 
         with patch.dict(sys.modules, {"vnstock": fake_vnstock}):
             with patch("src.collectors.vietnam.time.sleep", return_value=None):

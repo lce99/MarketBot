@@ -70,6 +70,108 @@ VN_SECTOR_MAP = {
 class VietnamCollector(BaseCollector):
     country_code = "VN"
 
+    def _load_listing(self) -> pd.DataFrame:
+        """Load the Vietnam listing table across supported vnstock versions."""
+        errors: list[str] = []
+
+        try:
+            from vnstock import Listing
+
+            listing_client = Listing(source="VCI")
+            base_listing = listing_client.all_symbols()
+            industries = listing_client.symbols_by_industries()
+            listing = self._merge_listing_frames(base_listing, industries)
+            if listing is not None and not listing.empty:
+                return listing
+        except Exception as exc:
+            errors.append(f"Listing API: {exc}")
+
+        try:
+            from vnstock import Vnstock
+
+            stock = Vnstock()
+            legacy_listing = stock.stock().listing.all_symbols()
+            listing = self._normalize_listing_frame(legacy_listing)
+            if listing is not None and not listing.empty:
+                return listing
+        except Exception as exc:
+            errors.append(f"Legacy stock.listing API: {exc}")
+
+        joined_errors = "; ".join(errors) if errors else "unknown error"
+        raise RuntimeError(f"베트남 종목 리스트 조회 실패: {joined_errors}")
+
+    def _normalize_listing_frame(self, listing: pd.DataFrame) -> pd.DataFrame:
+        """Normalize vnstock listing tables to the columns used by the collector."""
+        if listing is None or listing.empty:
+            return pd.DataFrame()
+
+        listing = listing.copy()
+        if "ticker" not in listing.columns and "symbol" in listing.columns:
+            listing["ticker"] = listing["symbol"]
+        if "name" not in listing.columns:
+            for column in (
+                "organ_name",
+                "organ_short_name",
+                "company_name",
+                "short_name",
+            ):
+                if column in listing.columns:
+                    listing["name"] = listing[column]
+                    break
+        if "industry" not in listing.columns:
+            industry = None
+            for column in ("industry_name", "icb_name3", "icb_name2", "sector"):
+                if column in listing.columns:
+                    industry = listing[column]
+                    break
+            if industry is not None:
+                listing["industry"] = industry
+
+        return listing
+
+    def _merge_listing_frames(
+        self,
+        base_listing: pd.DataFrame,
+        industries: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Merge vnstock listing/name data with industry classifications."""
+        base_listing = self._normalize_listing_frame(base_listing)
+        industries = self._normalize_listing_frame(industries)
+
+        if base_listing.empty and industries.empty:
+            return pd.DataFrame()
+        if base_listing.empty:
+            return industries
+        if industries.empty:
+            return base_listing
+
+        merged = base_listing.merge(
+            industries.drop_duplicates(subset=["ticker"]),
+            on="ticker",
+            how="left",
+            suffixes=("", "_industry"),
+        )
+
+        if "name" not in merged.columns or merged["name"].isna().all():
+            fallback_name = merged.get("name_industry")
+            if fallback_name is not None:
+                merged["name"] = fallback_name
+        else:
+            fallback_name = merged.get("name_industry")
+            if fallback_name is not None:
+                merged["name"] = merged["name"].fillna(fallback_name)
+
+        if "industry" not in merged.columns or merged["industry"].isna().all():
+            fallback_industry = merged.get("industry_industry")
+            if fallback_industry is not None:
+                merged["industry"] = fallback_industry
+        else:
+            fallback_industry = merged.get("industry_industry")
+            if fallback_industry is not None:
+                merged["industry"] = merged["industry"].fillna(fallback_industry)
+
+        return merged
+
     def _select_listing_candidates(
         self,
         listing: pd.DataFrame,
@@ -181,7 +283,7 @@ class VietnamCollector(BaseCollector):
             end_date = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
 
             # 1) 전종목 리스트
-            listing = stock.stock().listing.all_symbols()
+            listing = self._load_listing()
             if listing is None or listing.empty:
                 logger.warning("[VN] 종목 리스트 없음")
                 return pd.DataFrame()

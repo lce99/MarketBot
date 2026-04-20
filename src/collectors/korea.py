@@ -1,5 +1,6 @@
 """한국 시장 수집기 - pykrx 기반 KOSPI/KOSDAQ 전종목 수집"""
 
+from contextlib import contextmanager
 import logging
 import time
 
@@ -46,6 +47,62 @@ KRX_INDEX_TO_GICS = {
 class KoreaCollector(BaseCollector):
     country_code = "KR"
 
+    @contextmanager
+    def _suppress_pykrx_info_logging(self):
+        """Suppress pykrx's malformed root-level info logging during API calls."""
+        root_logger = logging.getLogger()
+        previous_level = root_logger.level
+        root_logger.setLevel(max(logging.WARNING, previous_level))
+        try:
+            yield
+        finally:
+            root_logger.setLevel(previous_level)
+
+    def _call_pykrx(
+        self,
+        label: str,
+        func,
+        *args,
+        retries: int = 3,
+        retry_delay: float = 1.0,
+        validator=None,
+        **kwargs,
+    ):
+        """Call pykrx with retries and optional response validation."""
+        last_exc = None
+        for attempt in range(1, retries + 1):
+            try:
+                with self._suppress_pykrx_info_logging():
+                    result = func(*args, **kwargs)
+                if validator is not None:
+                    validator(result)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= retries:
+                    break
+                logger.warning(
+                    f"[KR] {label} 실패, 재시도 {attempt}/{retries - 1}: {exc}"
+                )
+                time.sleep(retry_delay * attempt)
+
+        raise last_exc
+
+    def _validate_ohlcv_frame(
+        self,
+        frame: pd.DataFrame,
+        required_columns: tuple[str, ...] = ("종가", "거래량"),
+    ) -> None:
+        """Ensure pykrx returned the expected OHLCV structure."""
+        if frame is None or frame.empty:
+            return
+
+        missing_columns = [
+            column for column in required_columns if column not in frame.columns
+        ]
+        if missing_columns:
+            raise ValueError(f"pykrx invalid columns: {missing_columns}")
+
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
         """KOSPI + KOSDAQ 전종목 일간 데이터 수집."""
         for date_fmt in self._candidate_trading_dates(date):
@@ -85,7 +142,13 @@ class KoreaCollector(BaseCollector):
         for raw_date in recent_dates(date, lookback_days=lookback_days):
             compact = raw_date.replace("-", "")
             try:
-                business_date = krx.get_nearest_business_day_in_a_week(compact)
+                business_date = self._call_pykrx(
+                    "거래일 확인",
+                    krx.get_nearest_business_day_in_a_week,
+                    compact,
+                    retries=2,
+                    retry_delay=0.5,
+                )
             except Exception:
                 business_date = compact
 
@@ -115,7 +178,13 @@ class KoreaCollector(BaseCollector):
         """특정 시장 전종목 데이터 수집."""
         try:
             # 1) 전종목 OHLCV (등락률, 시가총액 포함)
-            ohlcv = krx.get_market_ohlcv(date_fmt, market=market)
+            ohlcv = self._call_pykrx(
+                f"{market} OHLCV",
+                krx.get_market_ohlcv,
+                date_fmt,
+                market=market,
+                validator=self._validate_ohlcv_frame,
+            )
             if ohlcv.empty:
                 logger.warning(f"[KR] {market} 데이터 없음 ({date_fmt})")
                 return None
@@ -123,9 +192,15 @@ class KoreaCollector(BaseCollector):
 
             weekly_reference = None
             if weekly_reference_date:
-                weekly_reference = krx.get_market_ohlcv(
+                weekly_reference = self._call_pykrx(
+                    f"{market} 주간 비교 OHLCV",
+                    krx.get_market_ohlcv,
                     weekly_reference_date,
                     market=market,
+                    validator=lambda frame: self._validate_ohlcv_frame(
+                        frame,
+                        required_columns=("종가",),
+                    ),
                 )
                 time.sleep(0.5)
 
@@ -198,7 +273,14 @@ class KoreaCollector(BaseCollector):
         skip_prefixes = ("코스피", "코스닥", "KOSPI", "KOSDAQ")
 
         try:
-            idx_list = krx.get_index_ticker_list(date_fmt, market=market)
+            idx_list = self._call_pykrx(
+                f"{market} 업종 인덱스",
+                krx.get_index_ticker_list,
+                date_fmt,
+                market=market,
+                retries=2,
+                retry_delay=0.5,
+            )
             for idx_ticker in idx_list:
                 idx_name = krx.get_index_ticker_name(idx_ticker)
 
@@ -208,8 +290,13 @@ class KoreaCollector(BaseCollector):
                     continue
 
                 try:
-                    components = krx.get_index_portfolio_deposit_file(
-                        idx_ticker, date_fmt
+                    components = self._call_pykrx(
+                        f"{market} 업종 구성종목 {idx_name}",
+                        krx.get_index_portfolio_deposit_file,
+                        idx_ticker,
+                        date_fmt,
+                        retries=2,
+                        retry_delay=0.5,
                     )
                     if components:
                         for stock_ticker in components:
