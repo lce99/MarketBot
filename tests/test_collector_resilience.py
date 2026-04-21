@@ -142,8 +142,13 @@ class CollectorResilienceTests(unittest.TestCase):
                     "src.collectors.korea.krx.get_market_ohlcv",
                     return_value=invalid_ohlcv,
                 ) as mock_get_market_ohlcv:
-                    with patch("src.collectors.korea.time.sleep", return_value=None):
-                        actual = collector.fetch_all_stocks("2026-04-21")
+                    with patch.object(
+                        collector,
+                        "_fetch_market_with_fdr",
+                        return_value=None,
+                    ):
+                        with patch("src.collectors.korea.time.sleep", return_value=None):
+                            actual = collector.fetch_all_stocks("2026-04-21")
 
         self.assertTrue(actual.empty)
         self.assertEqual(mock_get_market_ohlcv.call_count, 4)
