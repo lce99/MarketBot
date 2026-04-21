@@ -1,6 +1,13 @@
-"""한국 시장 수집기 - pykrx 기반 KOSPI/KOSDAQ 전종목 수집"""
+"""Korea market collector.
+
+Primary source: pykrx
+Fallback source: FinanceDataReader KRX-MARCAP snapshot
+"""
+
+from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 import logging
 import time
 
@@ -10,26 +17,27 @@ from pykrx import stock as krx
 from src.collectors.base import BaseCollector
 from src.collectors.date_utils import compute_return_pct, recent_dates
 from src.config import KR_SECTOR_MAP
+from src.database import get_connection, get_instrument_universe, get_raw_connection
 
 logger = logging.getLogger(__name__)
 
-# pykrx 업종 인덱스명 → GICS 섹터 매핑
+
 KRX_INDEX_TO_GICS = {
-    "음식료·담배": "필수소비재",
-    "섬유·의류": "경기소비재",
-    "종이·목재": "소재",
+    "음식료품담배": "필수소비재",
+    "섬유의류": "경기소비재",
+    "종이목재": "소재",
     "화학": "소재",
     "제약": "헬스케어",
-    "비금속": "소재",
+    "비금속광물": "소재",
     "금속": "소재",
-    "기계·장비": "산업재",
+    "기계장비": "산업재",
     "전기전자": "정보기술",
-    "의료·정밀기기": "헬스케어",
-    "운송장비·부품": "산업재",
+    "의료정밀기기": "헬스케어",
+    "운송장비부품": "산업재",
     "유통": "경기소비재",
-    "전기·가스": "유틸리티",
+    "전기가스": "유틸리티",
     "건설": "산업재",
-    "운송·창고": "산업재",
+    "운수창고": "산업재",
     "통신": "커뮤니케이션",
     "금융": "금융",
     "증권": "금융",
@@ -38,8 +46,8 @@ KRX_INDEX_TO_GICS = {
     "제조": "산업재",
     "부동산": "부동산",
     "IT 서비스": "정보기술",
-    "오락·문화": "커뮤니케이션",
-    "출판·매체복제": "커뮤니케이션",
+    "오락문화": "커뮤니케이션",
+    "출판매체복제": "커뮤니케이션",
     "기타제조": "산업재",
 }
 
@@ -49,7 +57,7 @@ class KoreaCollector(BaseCollector):
 
     @contextmanager
     def _suppress_pykrx_info_logging(self):
-        """Suppress pykrx's malformed root-level info logging during API calls."""
+        """Suppress pykrx's broken root-level info logging."""
         root_logger = logging.getLogger()
         previous_level = root_logger.level
         root_logger.setLevel(max(logging.WARNING, previous_level))
@@ -68,7 +76,7 @@ class KoreaCollector(BaseCollector):
         validator=None,
         **kwargs,
     ):
-        """Call pykrx with retries and optional response validation."""
+        """Call pykrx with retries and optional validation."""
         last_exc = None
         for attempt in range(1, retries + 1):
             try:
@@ -77,7 +85,7 @@ class KoreaCollector(BaseCollector):
                 if validator is not None:
                     validator(result)
                 return result
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover - retry path is tested
                 last_exc = exc
                 if attempt >= retries:
                     break
@@ -88,12 +96,24 @@ class KoreaCollector(BaseCollector):
 
         raise last_exc
 
+    def _is_transport_error(self, exc: Exception) -> bool:
+        """Detect pykrx/network failures where retrying older dates will not help."""
+        message = str(exc)
+        markers = (
+            "None of [Index(",
+            "Expecting value",
+            "JSONDecodeError",
+            "pykrx invalid columns",
+            "index -1 is out of bounds",
+        )
+        return any(marker in message for marker in markers)
+
     def _validate_ohlcv_frame(
         self,
         frame: pd.DataFrame,
         required_columns: tuple[str, ...] = ("종가", "거래량"),
     ) -> None:
-        """Ensure pykrx returned the expected OHLCV structure."""
+        """Validate that pykrx returned an OHLCV-like frame."""
         if frame is None or frame.empty:
             return
 
@@ -103,12 +123,253 @@ class KoreaCollector(BaseCollector):
         if missing_columns:
             raise ValueError(f"pykrx invalid columns: {missing_columns}")
 
+    def _iso_from_compact(self, date_fmt: str | None) -> str | None:
+        if not date_fmt:
+            return None
+        return f"{date_fmt[:4]}-{date_fmt[4:6]}-{date_fmt[6:8]}"
+
+    def _load_cached_universe_map(self) -> dict[str, dict]:
+        """Load cached KR universe rows keyed by ticker."""
+        try:
+            conn = get_connection()
+            try:
+                rows = get_instrument_universe(conn, self.country_code)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning(f"[KR] cached universe unavailable: {exc}")
+            return {}
+
+        return {
+            row["ticker"]: row
+            for row in rows
+            if row.get("ticker")
+        }
+
+    def _load_cached_close_map(
+        self,
+        tickers: list[str],
+        end_date: str | None,
+        lookback_days: int = 7,
+    ) -> dict[str, float]:
+        """Load the latest cached close at or before one reference date."""
+        if not tickers or not end_date:
+            return {}
+
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        start_date = (end_dt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        placeholders = ", ".join("?" for _ in tickers)
+
+        conn = get_raw_connection()
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT ticker, date, close_price
+                FROM stock_daily
+                WHERE country = ?
+                  AND date BETWEEN ? AND ?
+                  AND ticker IN ({placeholders})
+                ORDER BY date DESC
+                """,
+                [self.country_code, start_date, end_date, *tickers],
+            ).fetchall()
+        finally:
+            conn.close()
+
+        close_map: dict[str, float] = {}
+        for row in rows:
+            ticker = row["ticker"]
+            if ticker not in close_map and row["close_price"] is not None:
+                close_map[ticker] = float(row["close_price"])
+        return close_map
+
+    def _normalize_fdr_listing(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Normalize FinanceDataReader listing frames into common columns."""
+        if frame is None or frame.empty:
+            return pd.DataFrame()
+
+        normalized = frame.copy()
+        alias_map = {
+            "ticker": ("Code", "Symbol", "code", "symbol", "종목코드", "ticker"),
+            "name": ("Name", "name", "종목명"),
+            "sector": ("Sector", "Industry", "industry", "업종", "sector"),
+            "market": ("Market", "market", "시장"),
+            "close_price": ("Close", "close", "종가"),
+            "volume": ("Volume", "volume", "거래량"),
+            "market_cap": ("Marcap", "MarketCap", "market_cap", "시가총액"),
+            "daily_return": (
+                "ChagesRatio",
+                "ChangesRatio",
+                "ChangeRatio",
+                "daily_return",
+                "등락률",
+            ),
+        }
+
+        for target, aliases in alias_map.items():
+            if target in normalized.columns:
+                continue
+            for column in aliases:
+                if column in normalized.columns:
+                    normalized[target] = normalized[column]
+                    break
+
+        if "ticker" in normalized.columns:
+            normalized["ticker"] = (
+                normalized["ticker"].astype(str).str.strip().str.zfill(6)
+            )
+
+        for numeric_column in ("close_price", "volume", "market_cap", "daily_return"):
+            if numeric_column in normalized.columns:
+                normalized[numeric_column] = pd.to_numeric(
+                    normalized[numeric_column],
+                    errors="coerce",
+                )
+
+        if "market_cap" in normalized.columns:
+            market_cap = normalized["market_cap"].dropna()
+            if not market_cap.empty and float(market_cap.max()) < 1_000_000_000_000:
+                # FinanceDataReader's KRX-MARCAP snapshot uses 백만원 units.
+                normalized["market_cap"] = normalized["market_cap"] * 1_000_000
+
+        keep_columns = [
+            column
+            for column in (
+                "ticker",
+                "name",
+                "sector",
+                "market",
+                "close_price",
+                "volume",
+                "market_cap",
+                "daily_return",
+            )
+            if column in normalized.columns
+        ]
+        return normalized[keep_columns].dropna(subset=["ticker"]).drop_duplicates(
+            subset=["ticker"]
+        )
+
+    def _map_sector(self, raw_sector: str | None) -> str:
+        if not raw_sector:
+            return "기타"
+        return KRX_INDEX_TO_GICS.get(
+            str(raw_sector),
+            KR_SECTOR_MAP.get(str(raw_sector), str(raw_sector)),
+        )
+
+    def _fetch_market_with_fdr(
+        self,
+        date_fmt: str,
+        market: str,
+        weekly_reference_date: str | None = None,
+    ) -> pd.DataFrame | None:
+        """Fallback current-day KR snapshot via FinanceDataReader."""
+        try:
+            import FinanceDataReader as fdr
+        except ImportError as exc:
+            raise RuntimeError(
+                "FinanceDataReader 미설치: pip install finance-datareader"
+            ) from exc
+
+        snapshot = self._normalize_fdr_listing(fdr.StockListing("KRX-MARCAP"))
+        if snapshot.empty:
+            return None
+
+        market_listing = pd.DataFrame()
+        try:
+            market_listing = self._normalize_fdr_listing(fdr.StockListing(market))
+        except Exception as exc:
+            logger.warning(f"[KR] {market} FDR listing unavailable: {exc}")
+
+        if not market_listing.empty:
+            tickers = set(market_listing["ticker"].tolist())
+            snapshot = snapshot[snapshot["ticker"].isin(tickers)].copy()
+            merged = market_listing[["ticker"]].drop_duplicates("ticker").copy()
+            for field in ("name", "sector"):
+                if field in market_listing.columns:
+                    merged[field] = market_listing[field]
+            snapshot = snapshot.merge(merged, on="ticker", how="left", suffixes=("", "_listing"))
+            for field in ("name", "sector"):
+                fallback_col = f"{field}_listing"
+                if fallback_col in snapshot.columns:
+                    if field not in snapshot.columns:
+                        snapshot[field] = snapshot[fallback_col]
+                    else:
+                        snapshot[field] = snapshot[field].fillna(snapshot[fallback_col])
+        elif "market" in snapshot.columns:
+            snapshot = snapshot[snapshot["market"].astype(str).str.upper() == market].copy()
+
+        if snapshot.empty:
+            logger.warning(f"[KR] {market} FDR fallback returned no rows")
+            return None
+
+        cached_universe = self._load_cached_universe_map()
+        reference_close_map = self._load_cached_close_map(
+            snapshot["ticker"].tolist(),
+            self._iso_from_compact(weekly_reference_date),
+            lookback_days=10,
+        )
+
+        rows = []
+        for _, row in snapshot.iterrows():
+            ticker = row["ticker"]
+            close_price = row.get("close_price")
+            if pd.isna(close_price):
+                continue
+
+            cached = cached_universe.get(ticker, {})
+
+            daily_return = row.get("daily_return")
+            daily_return = None if pd.isna(daily_return) else float(daily_return)
+
+            prev_close = reference_close_map.get(ticker)
+            weekly_return = (
+                compute_return_pct(float(close_price), prev_close)
+                if prev_close not in (None, 0)
+                else None
+            )
+
+            raw_sector = row.get("sector")
+            if pd.isna(raw_sector) or not raw_sector:
+                sector = cached.get("sector") or "기타"
+            else:
+                sector = self._map_sector(str(raw_sector))
+
+            volume = row.get("volume")
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "name": row.get("name") or cached.get("name") or ticker,
+                    "sector": sector,
+                    "market_cap": (
+                        float(row["market_cap"])
+                        if pd.notna(row.get("market_cap"))
+                        else cached.get("market_cap")
+                    ),
+                    "close_price": float(close_price),
+                    "daily_return": daily_return,
+                    "weekly_return": weekly_return,
+                    "volume": (
+                        float(volume)
+                        if pd.notna(volume)
+                        else cached.get("last_volume")
+                    ),
+                    "avg_volume_20d": cached.get("avg_volume_20d"),
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        logger.warning(f"[KR] {market} recovered via FinanceDataReader: {len(df)} rows")
+        return df
+
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
-        """KOSPI + KOSDAQ 전종목 일간 데이터 수집."""
+        """Fetch KOSPI + KOSDAQ daily snapshots."""
+        self._pykrx_transport_failed = False
         for date_fmt in self._candidate_trading_dates(date):
             weekly_reference_date = self._resolve_weekly_reference_date(date_fmt)
             all_data = []
-            for market in ["KOSPI", "KOSDAQ"]:
+            for market in ("KOSPI", "KOSDAQ"):
                 df = self._fetch_market(
                     date_fmt,
                     market,
@@ -118,12 +379,15 @@ class KoreaCollector(BaseCollector):
                     all_data.append(df)
 
             if not all_data:
+                if self._pykrx_transport_failed:
+                    logger.warning(
+                        "[KR] pykrx transport unhealthy, skipping older-date fallback"
+                    )
+                    break
                 continue
 
             result = pd.concat(all_data, ignore_index=True)
-            self.effective_date = (
-                f"{date_fmt[:4]}-{date_fmt[4:6]}-{date_fmt[6:8]}"
-            )
+            self.effective_date = self._iso_from_compact(date_fmt) or date
             logger.info(f"[KR] 전체: {len(result)}개 종목")
             return result
 
@@ -131,36 +395,27 @@ class KoreaCollector(BaseCollector):
         return pd.DataFrame()
 
     def _candidate_trading_dates(self, date: str) -> list[str]:
-        """요청일 기준 최근 거래일 후보를 중복 없이 반환."""
+        """Return recent calendar-date candidates without extra pykrx calls."""
         return self._recent_trading_dates(date, lookback_days=7)
 
     def _recent_trading_dates(self, date: str, lookback_days: int) -> list[str]:
-        """요청일 기준 최근 거래일 후보를 중복 없이 반환."""
         candidates: list[str] = []
         seen: set[str] = set()
 
         for raw_date in recent_dates(date, lookback_days=lookback_days):
             compact = raw_date.replace("-", "")
-            try:
-                business_date = self._call_pykrx(
-                    "거래일 확인",
-                    krx.get_nearest_business_day_in_a_week,
-                    compact,
-                    retries=2,
-                    retry_delay=0.5,
-                )
-            except Exception:
-                business_date = compact
-
-            if business_date not in seen:
-                seen.add(business_date)
-                candidates.append(business_date)
+            if compact not in seen:
+                seen.add(compact)
+                candidates.append(compact)
 
         return candidates
 
     def _resolve_weekly_reference_date(self, date_fmt: str) -> str | None:
-        """현재 거래일 대비 약 5거래일 전 날짜를 반환."""
-        iso_date = f"{date_fmt[:4]}-{date_fmt[4:6]}-{date_fmt[6:8]}"
+        """Pick an approximately five-trading-day-back reference date."""
+        iso_date = self._iso_from_compact(date_fmt)
+        if iso_date is None:
+            return None
+
         recent_trading_dates = self._recent_trading_dates(iso_date, lookback_days=21)
         if len(recent_trading_dates) <= 1:
             return None
@@ -175,14 +430,15 @@ class KoreaCollector(BaseCollector):
         market: str,
         weekly_reference_date: str | None = None,
     ) -> pd.DataFrame | None:
-        """특정 시장 전종목 데이터 수집."""
+        """Fetch one Korea market snapshot."""
         try:
-            # 1) 전종목 OHLCV (등락률, 시가총액 포함)
             ohlcv = self._call_pykrx(
                 f"{market} OHLCV",
                 krx.get_market_ohlcv,
                 date_fmt,
                 market=market,
+                retries=2,
+                retry_delay=0.5,
                 validator=self._validate_ohlcv_frame,
             )
             if ohlcv.empty:
@@ -197,6 +453,8 @@ class KoreaCollector(BaseCollector):
                     krx.get_market_ohlcv,
                     weekly_reference_date,
                     market=market,
+                    retries=2,
+                    retry_delay=0.5,
                     validator=lambda frame: self._validate_ohlcv_frame(
                         frame,
                         required_columns=("종가",),
@@ -204,11 +462,9 @@ class KoreaCollector(BaseCollector):
                 )
                 time.sleep(0.5)
 
-            # 2) 업종 인덱스 → 종목별 섹터 매핑
             sector_map = self._build_sector_map(date_fmt, market)
             time.sleep(0.5)
 
-            # 3) DataFrame 구성
             rows = []
             for ticker in ohlcv.index:
                 try:
@@ -236,40 +492,54 @@ class KoreaCollector(BaseCollector):
                         else None
                     )
 
-                    # 섹터 매핑: 업종 인덱스 기반
                     raw_sector = sector_map.get(ticker, "기타")
-                    sector = KRX_INDEX_TO_GICS.get(
-                        raw_sector, KR_SECTOR_MAP.get(raw_sector, "기타")
-                    )
+                    sector = self._map_sector(raw_sector)
 
-                    rows.append({
-                        "ticker": ticker,
-                        "name": name,
-                        "sector": sector,
-                        "market_cap": market_cap,
-                        "close_price": close_price,
-                        "daily_return": daily_return,
-                        "weekly_return": weekly_return,
-                        "volume": volume,
-                        "avg_volume_20d": None,
-                    })
-                except Exception as e:
-                    logger.debug(f"[KR] {ticker} 스킵: {e}")
+                    rows.append(
+                        {
+                            "ticker": ticker,
+                            "name": name,
+                            "sector": sector,
+                            "market_cap": market_cap,
+                            "close_price": close_price,
+                            "daily_return": daily_return,
+                            "weekly_return": weekly_return,
+                            "volume": volume,
+                            "avg_volume_20d": None,
+                        }
+                    )
+                except Exception as exc:
+                    logger.debug(f"[KR] {ticker} skip: {exc}")
                     continue
 
             df = pd.DataFrame(rows)
             logger.info(f"[KR] {market}: {len(df)}개 종목")
             return df
 
-        except Exception as e:
-            logger.error(f"[KR] {market} 수집 실패: {e}", exc_info=True)
+        except Exception as exc:
+            if self._is_transport_error(exc):
+                self._pykrx_transport_failed = True
+
+            try:
+                fallback_df = self._fetch_market_with_fdr(
+                    date_fmt,
+                    market,
+                    weekly_reference_date=weekly_reference_date,
+                )
+                if fallback_df is not None and not fallback_df.empty:
+                    return fallback_df
+            except Exception as fallback_exc:
+                logger.error(
+                    f"[KR] {market} FDR fallback failed: {fallback_exc}",
+                    exc_info=True,
+                )
+
+            logger.error(f"[KR] {market} 수집 실패: {exc}", exc_info=True)
             return None
 
     def _build_sector_map(self, date_fmt: str, market: str) -> dict[str, str]:
-        """업종 인덱스 구성종목 조회 → 종목→업종 매핑."""
+        """Build ticker -> raw KRX sector name map from index constituents."""
         sector_map: dict[str, str] = {}
-
-        # 종합/규모 지수는 스킵 (코스피, 코스닥, 대형주 등)
         skip_prefixes = ("코스피", "코스닥", "KOSPI", "KOSDAQ")
 
         try:
@@ -283,8 +553,7 @@ class KoreaCollector(BaseCollector):
             )
             for idx_ticker in idx_list:
                 idx_name = krx.get_index_ticker_name(idx_ticker)
-
-                if any(idx_name.startswith(p) for p in skip_prefixes):
+                if any(idx_name.startswith(prefix) for prefix in skip_prefixes):
                     continue
                 if idx_name not in KRX_INDEX_TO_GICS:
                     continue
@@ -300,14 +569,13 @@ class KoreaCollector(BaseCollector):
                     )
                     if components:
                         for stock_ticker in components:
-                            if stock_ticker not in sector_map:
-                                sector_map[stock_ticker] = idx_name
+                            sector_map.setdefault(stock_ticker, idx_name)
                     time.sleep(0.3)
                 except Exception:
                     continue
 
-        except Exception as e:
-            logger.warning(f"[KR] 업종 매핑 실패: {e}")
+        except Exception as exc:
+            logger.warning(f"[KR] 업종 매핑 실패: {exc}")
 
         logger.info(f"[KR] {market} 업종 매핑: {len(sector_map)}개 종목")
         return sector_map

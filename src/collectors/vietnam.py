@@ -70,6 +70,42 @@ VN_SECTOR_MAP = {
 class VietnamCollector(BaseCollector):
     country_code = "VN"
 
+    def _load_listing_from_cached_universe(self) -> pd.DataFrame:
+        """Fall back to the last cached universe when vnstock listing APIs fail."""
+        try:
+            conn = get_connection()
+            try:
+                rows = get_instrument_universe(conn, self.country_code)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning(f"[VN] cached listing unavailable: {exc}")
+            return pd.DataFrame()
+
+        if not rows:
+            return pd.DataFrame()
+
+        listing = pd.DataFrame(
+            [
+                {
+                    "ticker": row.get("ticker"),
+                    "name": row.get("name") or row.get("ticker"),
+                    "sector": row.get("sector"),
+                    "market_cap": row.get("market_cap"),
+                }
+                for row in rows
+                if row.get("ticker")
+            ]
+        )
+        if listing.empty:
+            return pd.DataFrame()
+
+        listing = listing.drop_duplicates(subset=["ticker"]).reset_index(drop=True)
+        logger.warning(
+            f"[VN] vnstock listing unavailable, using cached universe: {len(listing)} tickers"
+        )
+        return listing
+
     def _load_listing(self) -> pd.DataFrame:
         """Load the Vietnam listing table across supported vnstock versions."""
         errors: list[str] = []
@@ -77,14 +113,34 @@ class VietnamCollector(BaseCollector):
         try:
             from vnstock import Listing
 
-            listing_client = Listing(source="VCI")
-            base_listing = listing_client.all_symbols()
-            industries = listing_client.symbols_by_industries()
-            listing = self._merge_listing_frames(base_listing, industries)
-            if listing is not None and not listing.empty:
-                return listing
+            for source in ("KBS", "VCI"):
+                try:
+                    listing_client = Listing(source=source)
+                    base_listing = listing_client.all_symbols()
+                    industries = listing_client.symbols_by_industries()
+                    listing = self._merge_listing_frames(base_listing, industries)
+                    if listing is not None and not listing.empty:
+                        return listing
+                except Exception as exc:
+                    errors.append(f"Listing API ({source}): {exc}")
         except Exception as exc:
-            errors.append(f"Listing API: {exc}")
+            errors.append(f"Listing import: {exc}")
+
+        try:
+            from vnstock import Quote
+
+            for source in ("KBS", "VCI"):
+                try:
+                    listing_client = Quote(symbol="VCI", source=source)
+                    base_listing = listing_client.listing.all_symbols()
+                    industries = listing_client.listing.symbols_by_industries()
+                    listing = self._merge_listing_frames(base_listing, industries)
+                    if listing is not None and not listing.empty:
+                        return listing
+                except Exception as exc:
+                    errors.append(f"Quote.listing API ({source}): {exc}")
+        except Exception as exc:
+            errors.append(f"Quote import: {exc}")
 
         try:
             from vnstock import Vnstock
@@ -97,8 +153,54 @@ class VietnamCollector(BaseCollector):
         except Exception as exc:
             errors.append(f"Legacy stock.listing API: {exc}")
 
+        cached_listing = self._load_listing_from_cached_universe()
+        if not cached_listing.empty:
+            return cached_listing
+
         joined_errors = "; ".join(errors) if errors else "unknown error"
         raise RuntimeError(f"베트남 종목 리스트 조회 실패: {joined_errors}")
+
+    def _load_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Load quote history across supported vnstock interfaces and sources."""
+        errors: list[str] = []
+
+        try:
+            from vnstock import Quote
+
+            for source in ("KBS", "VCI"):
+                try:
+                    quote = Quote(symbol=ticker, source=source)
+                    history = quote.history(
+                        start=start_date,
+                        end=end_date,
+                        interval="1D",
+                    )
+                    if history is not None:
+                        return history
+                except Exception as exc:
+                    errors.append(f"Quote API ({source}): {exc}")
+        except Exception as exc:
+            errors.append(f"Quote import: {exc}")
+
+        try:
+            from vnstock import Vnstock
+
+            stock = Vnstock()
+            for source in ("KBS", "VCI"):
+                try:
+                    history = stock.stock(symbol=ticker, source=source).quote.history(
+                        start=start_date,
+                        end=end_date,
+                    )
+                    if history is not None:
+                        return history
+                except Exception as exc:
+                    errors.append(f"Legacy quote API ({source}): {exc}")
+        except Exception as exc:
+            errors.append(f"Legacy Vnstock import: {exc}")
+
+        joined_errors = "; ".join(errors) if errors else "unknown error"
+        raise RuntimeError(f"{ticker} 가격 이력 조회 실패: {joined_errors}")
 
     def _normalize_listing_frame(self, listing: pd.DataFrame) -> pd.DataFrame:
         """Normalize vnstock listing tables to the columns used by the collector."""
@@ -302,9 +404,7 @@ class VietnamCollector(BaseCollector):
 
                 try:
                     # vnstock으로 최근 며칠 데이터를 가져와 최신 거래일 봉을 선택
-                    hist = stock.stock(symbol=ticker, source="VCI").quote.history(
-                        start=start_date, end=end_date
-                    )
+                    hist = self._load_history(ticker, start_date, end_date)
                     hist = self._prepare_history(hist, target_date)
                     if hist.empty:
                         continue
@@ -325,8 +425,12 @@ class VietnamCollector(BaseCollector):
                     avg_volume_20d = self._compute_avg_volume(hist)
 
                     # 섹터
-                    industry = info.get("industry", "") or info.get("sector", "") or ""
-                    sector = VN_SECTOR_MAP.get(industry, "기타")
+                    cached_sector = info.get("sector")
+                    if cached_sector:
+                        sector = cached_sector
+                    else:
+                        industry = info.get("industry", "") or ""
+                        sector = VN_SECTOR_MAP.get(industry, "기타")
 
                     market_cap = info.get("market_cap")
                     if pd.isna(market_cap) or market_cap in ("", None):

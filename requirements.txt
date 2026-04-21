@@ -1,4 +1,5 @@
 pykrx>=1.0.45
+finance-datareader>=0.9.102
 tushare>=1.4.0
 vnstock>=0.3.0
 finnhub-python>=2.4.0
