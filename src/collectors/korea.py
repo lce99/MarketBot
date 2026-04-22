@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+import json
 import logging
+from pathlib import Path
 import time
 
 import pandas as pd
@@ -54,6 +56,7 @@ KRX_INDEX_TO_GICS = {
 
 class KoreaCollector(BaseCollector):
     country_code = "KR"
+    _reference_sector_map: dict[str, str] | None = None
 
     @contextmanager
     def _suppress_pykrx_info_logging(self):
@@ -287,12 +290,44 @@ class KoreaCollector(BaseCollector):
             return True
         return str(sector).strip() in ("", "기타")
 
+    def _load_reference_sector_map(self) -> dict[str, str]:
+        """Load a committed KR ticker-to-sector reference map."""
+        if self._reference_sector_map is not None:
+            return self._reference_sector_map
+
+        reference_path = Path(__file__).with_name("data") / "kr_sector_reference.json"
+        if not reference_path.exists():
+            self._reference_sector_map = {}
+            return self._reference_sector_map
+
+        try:
+            payload = json.loads(reference_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"[KR] sector reference unavailable: {exc}")
+            self._reference_sector_map = {}
+            return self._reference_sector_map
+
+        tickers = payload.get("tickers", {})
+        if not isinstance(tickers, dict):
+            logger.warning("[KR] sector reference payload invalid")
+            self._reference_sector_map = {}
+            return self._reference_sector_map
+
+        self._reference_sector_map = {
+            str(ticker).zfill(6): str(sector).strip()
+            for ticker, sector in tickers.items()
+            if ticker and sector and not self._is_generic_sector(str(sector))
+        }
+        return self._reference_sector_map
+
     def _map_sector(self, raw_sector: str | None) -> str:
         if not raw_sector:
             return "기타"
 
         sector = str(raw_sector).strip()
         if not sector:
+            return "기타"
+        if self._is_generic_sector(sector):
             return "기타"
         if sector in SECTORS:
             return sector
@@ -309,6 +344,14 @@ class KoreaCollector(BaseCollector):
             if key in normalized or normalized in key:
                 return mapped
 
+        return "기타"
+
+    def _pick_best_sector(self, *candidates: str | None) -> str:
+        """Return the first non-generic sector after canonical mapping."""
+        for candidate in candidates:
+            mapped = self._map_sector(candidate)
+            if not self._is_generic_sector(mapped):
+                return mapped
         return "기타"
 
     def _fetch_market_with_fdr(
@@ -370,6 +413,7 @@ class KoreaCollector(BaseCollector):
 
         cached_universe = self._load_cached_universe_map()
         cached_metadata = self._get_cached_metadata(snapshot["ticker"].tolist())
+        reference_sectors = self._load_reference_sector_map()
         reference_close_map = self._load_cached_close_map(
             snapshot["ticker"].tolist(),
             self._iso_from_compact(weekly_reference_date),
@@ -401,9 +445,12 @@ class KoreaCollector(BaseCollector):
             if pd.notna(raw_sector) and raw_sector:
                 mapped_sector = self._map_sector(str(raw_sector))
 
-            sector = mapped_sector
-            if self._is_generic_sector(sector):
-                sector = metadata.get("sector") or cached.get("sector") or "기타"
+            sector = self._pick_best_sector(
+                mapped_sector,
+                metadata.get("sector"),
+                cached.get("sector"),
+                reference_sectors.get(ticker),
+            )
 
             volume = row.get("volume")
             market_cap = row.get("market_cap")
