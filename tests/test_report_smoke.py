@@ -184,22 +184,23 @@ class ReportSmokeTests(unittest.TestCase):
         messages = reporter.format_daily_report(date="2026-04-20")
         joined = "\n".join(messages)
 
-        self.assertIn("글로벌 섹터 데일리 리포트 (2026-04-20)", joined)
+        self.assertIn("글로벌 섹터 데일리 리포트", joined)
+        self.assertIn("기준일 2026-04-20", joined)
         self.assertIn("미국", joined)
-        self.assertIn("벤치 XLK +0.90%", joined)
+        self.assertIn("XLK +0.90% · 대비 +0.30%", joined)
         self.assertIn("기준선 KOSPI +0.15% (04-19)", joined)
-        self.assertIn("비정상 급등/급락", joined)
+        self.assertIn("비정상 급등/급락 1종목", joined)
 
     def test_format_country_detail_returns_expected_market_section(self) -> None:
         detail = reporter.format_country_detail("KR", date="2026-04-20")
 
         self.assertIn("한국 섹터 상세", detail)
-        self.assertIn("기준선 KOSPI +0.15% (04-19)", detail)
-        self.assertIn("KOSPI 대비 +0.25%", detail)
+        self.assertIn("기준선 KOSPI +0.15% (04-19) · 주간 +1.10%", detail)
+        self.assertIn("KOSPI +0.15% (04-19) · 대비 +0.25%", detail)
         self.assertIn("금융", detail)
 
     def test_format_sector_detail_uses_country_and_sector_benchmarks(self) -> None:
         detail = reporter.format_sector_detail("정보기술", date="2026-04-20")
 
-        self.assertIn("벤치 XLK +0.90%", detail)
-        self.assertIn("벤치 KOSPI +0.15% (04-19)", detail)
+        self.assertIn("XLK +0.90% · 대비 +0.30%", detail)
+        self.assertIn("KOSPI +0.15% (04-19) · 대비 +0.25%", detail)

@@ -1,5 +1,7 @@
 """텔레그램 리포트 포맷터."""
 
+from __future__ import annotations
+
 import json
 import logging
 from collections import defaultdict
@@ -61,12 +63,24 @@ def _benchmark_label(row: dict) -> str:
     return row["ticker"].lstrip("^")
 
 
+def _format_signed_pct(value: float | None, decimals: int = 2) -> str:
+    if value is None:
+        return "-"
+    return f"{value:+.{decimals}f}%"
+
+
+def _format_signed_number(value: float | None, decimals: int = 0) -> str:
+    if value is None:
+        return "-"
+    return f"{value:+.{decimals}f}"
+
+
 def _format_benchmark_return(row: dict, report_date: str) -> str:
     daily_return = row.get("daily_return")
     if daily_return is None:
         return ""
 
-    text = f"{daily_return:+.2f}%"
+    text = _format_signed_pct(daily_return)
     benchmark_date = row.get("date")
     if benchmark_date and benchmark_date != report_date:
         text += f" ({benchmark_date[5:]})"
@@ -82,23 +96,22 @@ def _format_country_benchmark_summary(
     if not benchmark or benchmark.get("daily_return") is None:
         return ""
 
-    line = (
-        f"  기준선 {_benchmark_label(benchmark)} "
+    parts = [
+        f"기준선 {_benchmark_label(benchmark)} "
         f"{_format_benchmark_return(benchmark, report_date)}"
-    )
+    ]
 
     weekly_return = benchmark.get("weekly_return")
     if weekly_return is not None:
-        line += f" | 주간 {weekly_return:+.2f}%"
+        parts.append(f"주간 {_format_signed_pct(weekly_return)}")
 
-    return line + "\n"
+    return " · ".join(parts)
 
 
 def _format_benchmark_comparison(
     row: dict,
     benchmark: dict | None,
     report_date: str,
-    compact: bool = False,
 ) -> str:
     if not benchmark:
         return ""
@@ -110,13 +123,63 @@ def _format_benchmark_comparison(
 
     label = _benchmark_label(benchmark)
     alpha = sector_return - benchmark_return
-    if compact:
-        return f" | {label} 대비 {alpha:+.2f}%"
-
     return (
-        f" | 벤치 {label} {_format_benchmark_return(benchmark, report_date)}"
-        f" | 초과 {alpha:+.2f}%"
+        f"{label} {_format_benchmark_return(benchmark, report_date)}"
+        f" · 대비 {_format_signed_pct(alpha)}"
     )
+
+
+def _format_leader(value) -> str:
+    gainers = _parse_top_gainers(value)
+    if not gainers:
+        return ""
+
+    top = gainers[0]
+    return f"대표 {top['name']} {_format_signed_pct(top['return'], decimals=1)}"
+
+
+def _format_market_cap_short(row: dict) -> str:
+    market_cap = row.get("market_cap")
+    if market_cap is None or market_cap <= 0:
+        return ""
+
+    if row.get("country") == "KR":
+        return f"시총 {market_cap / 1e8:,.0f}억"
+    return f"시총 {market_cap / 1e6:,.0f}M"
+
+
+def _format_sector_brief(
+    row: dict,
+    benchmark_lookup: dict[tuple[str, str | None], dict],
+    report_date: str,
+) -> str:
+    ret = row.get("daily_return") or 0
+    breadth_pct = (row.get("breadth") or 0) * 100
+    stock_count = row.get("stock_count")
+
+    lines = [f"• {row['sector']} {_format_signed_pct(ret)}"]
+
+    detail_parts = []
+    comparison = _format_benchmark_comparison(
+        row,
+        _get_benchmark_row(benchmark_lookup, row["country"], row["sector"]),
+        report_date,
+    )
+    if comparison:
+        detail_parts.append(comparison)
+    if breadth_pct > 0:
+        detail_parts.append(f"상승 {breadth_pct:.0f}%")
+    if stock_count:
+        detail_parts.append(f"{stock_count}종목")
+
+    leader = _format_leader(row.get("top_gainers"))
+    if leader:
+        detail_parts.append(leader)
+
+    if detail_parts:
+        lines.append("  " + " · ".join(detail_parts))
+
+    return "\n".join(lines)
 
 
 def format_daily_report(date: str | None = None) -> list[str]:
@@ -138,34 +201,42 @@ def format_daily_report(date: str | None = None) -> list[str]:
             (date,),
         ).fetchall()
 
-        header = f"📊 글로벌 섹터 데일리 리포트 ({date})\n"
-        header += "━" * 20 + "\n\n"
+        header_lines = [
+            "📊 글로벌 섹터 데일리 리포트",
+            f"기준일 {date}",
+            "",
+        ]
 
         if trend_rows:
-            header += "🔥 글로벌 트렌드 섹터 TOP 5\n"
+            header_lines.append("🔥 강한 흐름")
             for i, trend in enumerate(trend_rows[:5], start=1):
-                arrow = "▲" if trend["trend_score"] > 0 else "▼"
                 total = trend["countries_positive"] + trend["countries_negative"]
-                header += (
-                    f"  {i}. {trend['sector']} {arrow} | "
-                    f"스코어 {trend['trend_score']:+.0f} | "
-                    f"{trend['countries_positive']}/{total}개국 상승\n"
+                avg_return = trend["global_avg_return"]
+                header_lines.append(
+                    f"{i}. {trend['sector']} {_format_signed_number(trend['trend_score'])}"
                 )
-            header += "\n"
+                header_lines.append(
+                    f"   평균 {_format_signed_pct(avg_return)}"
+                    f" · 상승 {trend['countries_positive']}/{total}개국"
+                )
 
-            header += "❄️ 글로벌 약세 섹터\n"
-            for trend in trend_rows[-3:]:
-                if trend["trend_score"] < 0:
+            weak_rows = [row for row in reversed(trend_rows[-3:]) if row["trend_score"] < 0]
+            if weak_rows:
+                header_lines.extend(["", "🧊 약한 흐름"])
+                for trend in weak_rows:
                     total = trend["countries_positive"] + trend["countries_negative"]
-                    header += (
-                        f"  ▼ {trend['sector']} | "
-                        f"스코어 {trend['trend_score']:+.0f} | "
-                        f"{trend['countries_negative']}/{total}개국 하락\n"
+                    avg_return = trend["global_avg_return"]
+                    header_lines.append(
+                        f"• {trend['sector']} {_format_signed_number(trend['trend_score'])}"
+                    )
+                    header_lines.append(
+                        f"  평균 {_format_signed_pct(avg_return)}"
+                        f" · 하락 {trend['countries_negative']}/{total}개국"
                     )
         else:
-            header += "(트렌드 스코어 데이터 없음)\n"
+            header_lines.append("트렌드 스코어 데이터가 없습니다.")
 
-        messages.append(header)
+        messages.append("\n".join(header_lines).strip())
 
         all_perf = get_latest_sector_performance(conn, date=date)
         by_country: dict[str, list[dict]] = defaultdict(list)
@@ -183,71 +254,50 @@ def format_daily_report(date: str | None = None) -> list[str]:
             entries = by_country[code]
             total_stocks = sum(entry.get("stock_count", 0) for entry in entries)
 
-            msg = f"\n{flag} {name}"
-            if total_stocks:
-                msg += f" (분석 {total_stocks:,}종목)"
-            msg += "\n"
-
-            country_summary = _format_country_benchmark_summary(
+            msg_lines = [f"{flag} {name} · 분석 {total_stocks:,}종목" if total_stocks else f"{flag} {name}"]
+            benchmark_summary = _format_country_benchmark_summary(
                 benchmark_lookup, code, date
             )
-            if country_summary:
-                msg += country_summary
+            if benchmark_summary:
+                msg_lines.append(benchmark_summary)
 
             sorted_entries = sorted(
-                entries, key=lambda entry: entry.get("daily_return") or 0, reverse=True
+                entries,
+                key=lambda entry: entry.get("daily_return") or 0,
+                reverse=True,
             )
 
             for entry in sorted_entries:
                 if entry["sector"] == "기타":
                     continue
+                msg_lines.extend(["", _format_sector_brief(entry, benchmark_lookup, date)])
 
-                ret = entry.get("daily_return") or 0
-                arrow = "▲" if ret > 0 else ("▼" if ret < 0 else "■")
-                breadth_pct = (entry.get("breadth") or 0) * 100
-
-                line = f"  {arrow} {entry['sector']:6s} {ret:+.2f}%"
-
-                benchmark = _get_benchmark_row(benchmark_lookup, code, entry["sector"])
-                use_compact = bool(
-                    country_summary
-                    and benchmark
-                    and benchmark.get("sector") is None
-                    and benchmark.get("daily_return") is not None
-                )
-                line += _format_benchmark_comparison(
-                    entry, benchmark, date, compact=use_compact
-                )
-
-                if breadth_pct > 0:
-                    line += f" | 상승 {breadth_pct:.0f}%"
-
-                gainers = _parse_top_gainers(entry.get("top_gainers"))
-                if gainers:
-                    top = gainers[0]
-                    line += f" | {top['name']} {top['return']:+.1f}%"
-
-                msg += line + "\n"
-
-            messages.append(msg)
+            messages.append("\n".join(msg_lines).strip())
 
         abnormals = get_abnormal_stocks(conn, date=date)
         if abnormals:
-            msg = f"\n⚠️ 비정상 급등/급락 ({len(abnormals)}종목)\n"
+            msg_lines = [f"⚠️ 비정상 급등/급락 {len(abnormals)}종목"]
             for abnormal in abnormals[:10]:
                 info = COUNTRIES.get(abnormal["country"], {})
                 flag = info.get("flag", "")
-                cap_str = ""
-                if abnormal.get("market_cap") and abnormal["market_cap"] > 0:
-                    if abnormal["country"] == "KR":
-                        cap_str = f" (시총 {abnormal['market_cap']/1e8:,.0f}억)"
-                    else:
-                        cap_str = f" (시총 {abnormal['market_cap']/1e6:,.0f}M)"
-                msg += (
-                    f"  {flag} {abnormal['name']} "
-                    f"{abnormal['daily_return']:+.1f}%{cap_str}\n"
+                msg_lines.extend(
+                    [
+                        "",
+                        f"• {flag} {abnormal['name']} {_format_signed_pct(abnormal['daily_return'], 1)}",
+                    ]
                 )
-            messages.append(msg)
+                detail_parts = [
+                    part
+                    for part in (
+                        abnormal.get("sector"),
+                        _format_market_cap_short(abnormal),
+                    )
+                    if part
+                ]
+                if detail_parts:
+                    msg_lines.append("  " + " · ".join(detail_parts))
+
+            messages.append("\n".join(msg_lines).strip())
 
         return messages
     finally:
@@ -273,30 +323,46 @@ def format_sector_detail(sector_name: str, date: str | None = None) -> str:
         if not rows:
             return f"❌ '{sector_name}' 섹터 데이터를 찾을 수 없습니다."
 
-        msg = f"🔍 {sector_name} 섹터 상세 ({date})\n"
-        msg += "━" * 20 + "\n\n"
+        msg_lines = [
+            f"🔍 {sector_name} 섹터 상세",
+            f"기준일 {date}",
+        ]
 
         for row in rows:
             info = COUNTRIES.get(row["country"], {})
             flag = info.get("flag", "")
             name = info.get("name_kr", row["country"])
-            ret = row["daily_return"] or 0
-            arrow = "▲" if ret > 0 else ("▼" if ret < 0 else "■")
             breadth = (row["breadth"] or 0) * 100
 
-            line = f"{flag} {name}: {arrow} {ret:+.2f}%"
-            line += _format_benchmark_comparison(
+            msg_lines.extend(
+                [
+                    "",
+                    f"• {flag} {name} {_format_signed_pct(row['daily_return'])}",
+                ]
+            )
+
+            detail_parts = []
+            comparison = _format_benchmark_comparison(
                 row,
                 _get_benchmark_row(benchmark_lookup, row["country"], sector_name),
                 date,
             )
-            line += f" | 상승 {breadth:.0f}% | {row['stock_count']}종목\n"
-            msg += line
+            if comparison:
+                detail_parts.append(comparison)
+            if breadth > 0:
+                detail_parts.append(f"상승 {breadth:.0f}%")
+            detail_parts.append(f"{row['stock_count']}종목")
+            msg_lines.append("  " + " · ".join(detail_parts))
 
-            for gainer in _parse_top_gainers(row["top_gainers"])[:3]:
-                msg += f"    ↑ {gainer['name']} {gainer['return']:+.1f}%\n"
+            gainers = _parse_top_gainers(row["top_gainers"])[:3]
+            if gainers:
+                gainers_text = ", ".join(
+                    f"{gainer['name']} {_format_signed_pct(gainer['return'], 1)}"
+                    for gainer in gainers
+                )
+                msg_lines.append(f"  강세 {gainers_text}")
 
-        return msg
+        return "\n".join(msg_lines)
     finally:
         conn.close()
 
@@ -316,38 +382,23 @@ def format_country_detail(country_code: str, date: str | None = None) -> str:
         flag = info.get("flag", "")
         name = info.get("name_kr", country_code)
 
-        msg = f"{flag} {name} 섹터 상세 ({date})\n"
-        msg += "━" * 20 + "\n\n"
+        msg_lines = [
+            f"{flag} {name} 섹터 상세",
+            f"기준일 {date}",
+        ]
 
-        country_summary = _format_country_benchmark_summary(
+        benchmark_summary = _format_country_benchmark_summary(
             benchmark_lookup, country_code, date
         )
-        if country_summary:
-            msg += country_summary + "\n"
+        if benchmark_summary:
+            msg_lines.append(benchmark_summary)
 
         for row in rows:
             if row["sector"] == "기타":
                 continue
 
-            ret = row["daily_return"] or 0
-            arrow = "▲" if ret > 0 else ("▼" if ret < 0 else "■")
-            breadth = (row["breadth"] or 0) * 100
+            msg_lines.extend(["", _format_sector_brief(row, benchmark_lookup, date)])
 
-            benchmark = _get_benchmark_row(benchmark_lookup, country_code, row["sector"])
-            use_compact = bool(
-                country_summary
-                and benchmark
-                and benchmark.get("sector") is None
-                and benchmark.get("daily_return") is not None
-            )
-
-            line = f"{arrow} {row['sector']:8s} {ret:+.2f}%"
-            line += _format_benchmark_comparison(
-                row, benchmark, date, compact=use_compact
-            )
-            line += f" | 상승 {breadth:.0f}% | {row['stock_count']}종목\n"
-            msg += line
-
-        return msg
+        return "\n".join(msg_lines)
     finally:
         conn.close()
