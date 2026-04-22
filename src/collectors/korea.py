@@ -16,7 +16,7 @@ from pykrx import stock as krx
 
 from src.collectors.base import BaseCollector
 from src.collectors.date_utils import compute_return_pct, recent_dates
-from src.config import KR_SECTOR_MAP
+from src.config import KR_SECTOR_MAP, SECTORS
 from src.database import get_connection, get_instrument_universe, get_raw_connection
 
 logger = logging.getLogger(__name__)
@@ -250,13 +250,66 @@ class KoreaCollector(BaseCollector):
             subset=["ticker"]
         )
 
+    def _merge_listing_metadata(
+        self,
+        snapshot: pd.DataFrame,
+        listing: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Merge listing metadata into the fallback snapshot without losing rows."""
+        if snapshot.empty or listing.empty:
+            return snapshot
+
+        merge_columns = ["ticker"]
+        for field in ("name", "sector", "market"):
+            if field in listing.columns:
+                merge_columns.append(field)
+
+        listing = listing[merge_columns].drop_duplicates(subset=["ticker"])
+        merged = snapshot.merge(listing, on="ticker", how="left", suffixes=("", "_listing"))
+
+        for field in ("name", "sector", "market"):
+            fallback_col = f"{field}_listing"
+            if fallback_col not in merged.columns:
+                continue
+            if field not in merged.columns:
+                merged[field] = merged[fallback_col]
+            else:
+                merged[field] = merged[field].where(
+                    merged[field].notna() & merged[field].astype(str).str.strip().ne(""),
+                    merged[fallback_col],
+                )
+            merged = merged.drop(columns=[fallback_col])
+
+        return merged
+
+    def _is_generic_sector(self, sector: str | None) -> bool:
+        if sector is None:
+            return True
+        return str(sector).strip() in ("", "기타")
+
     def _map_sector(self, raw_sector: str | None) -> str:
         if not raw_sector:
             return "기타"
-        return KRX_INDEX_TO_GICS.get(
-            str(raw_sector),
-            KR_SECTOR_MAP.get(str(raw_sector), str(raw_sector)),
-        )
+
+        sector = str(raw_sector).strip()
+        if not sector:
+            return "기타"
+        if sector in SECTORS:
+            return sector
+        if sector in KRX_INDEX_TO_GICS:
+            return KRX_INDEX_TO_GICS[sector]
+        if sector in KR_SECTOR_MAP:
+            return KR_SECTOR_MAP[sector]
+
+        normalized = sector.replace(" ", "").replace(",", "")
+        for raw_key, mapped in {**KRX_INDEX_TO_GICS, **KR_SECTOR_MAP}.items():
+            key = str(raw_key).replace(" ", "").replace(",", "")
+            if not key:
+                continue
+            if key in normalized or normalized in key:
+                return mapped
+
+        return "기타"
 
     def _fetch_market_with_fdr(
         self,
@@ -277,26 +330,24 @@ class KoreaCollector(BaseCollector):
             return None
 
         market_listing = pd.DataFrame()
+        krx_listing = pd.DataFrame()
+        try:
+            krx_listing = self._normalize_fdr_listing(fdr.StockListing("KRX"))
+        except Exception as exc:
+            logger.warning(f"[KR] KRX FDR listing unavailable: {exc}")
+
         try:
             market_listing = self._normalize_fdr_listing(fdr.StockListing(market))
         except Exception as exc:
             logger.warning(f"[KR] {market} FDR listing unavailable: {exc}")
 
+        if not krx_listing.empty:
+            snapshot = self._merge_listing_metadata(snapshot, krx_listing)
+
         if not market_listing.empty:
+            snapshot = self._merge_listing_metadata(snapshot, market_listing)
             tickers = set(market_listing["ticker"].tolist())
             snapshot = snapshot[snapshot["ticker"].isin(tickers)].copy()
-            merged = market_listing[["ticker"]].drop_duplicates("ticker").copy()
-            for field in ("name", "sector"):
-                if field in market_listing.columns:
-                    merged[field] = market_listing[field]
-            snapshot = snapshot.merge(merged, on="ticker", how="left", suffixes=("", "_listing"))
-            for field in ("name", "sector"):
-                fallback_col = f"{field}_listing"
-                if fallback_col in snapshot.columns:
-                    if field not in snapshot.columns:
-                        snapshot[field] = snapshot[fallback_col]
-                    else:
-                        snapshot[field] = snapshot[field].fillna(snapshot[fallback_col])
         elif "market" in snapshot.columns:
             snapshot = snapshot[snapshot["market"].astype(str).str.upper() == market].copy()
 
@@ -305,6 +356,7 @@ class KoreaCollector(BaseCollector):
             return None
 
         cached_universe = self._load_cached_universe_map()
+        cached_metadata = self._get_cached_metadata(snapshot["ticker"].tolist())
         reference_close_map = self._load_cached_close_map(
             snapshot["ticker"].tolist(),
             self._iso_from_compact(weekly_reference_date),
@@ -319,6 +371,7 @@ class KoreaCollector(BaseCollector):
                 continue
 
             cached = cached_universe.get(ticker, {})
+            metadata = cached_metadata.get(ticker, {})
 
             daily_return = row.get("daily_return")
             daily_return = None if pd.isna(daily_return) else float(daily_return)
@@ -331,22 +384,34 @@ class KoreaCollector(BaseCollector):
             )
 
             raw_sector = row.get("sector")
-            if pd.isna(raw_sector) or not raw_sector:
-                sector = cached.get("sector") or "기타"
-            else:
-                sector = self._map_sector(str(raw_sector))
+            mapped_sector = None
+            if pd.notna(raw_sector) and raw_sector:
+                mapped_sector = self._map_sector(str(raw_sector))
+
+            sector = mapped_sector
+            if self._is_generic_sector(sector):
+                sector = metadata.get("sector") or cached.get("sector") or "기타"
 
             volume = row.get("volume")
+            market_cap = row.get("market_cap")
+            if pd.notna(market_cap):
+                market_cap_value = float(market_cap)
+            elif metadata.get("market_cap") is not None:
+                market_cap_value = float(metadata["market_cap"])
+            else:
+                market_cap_value = cached.get("market_cap")
+
             rows.append(
                 {
                     "ticker": ticker,
-                    "name": row.get("name") or cached.get("name") or ticker,
-                    "sector": sector,
-                    "market_cap": (
-                        float(row["market_cap"])
-                        if pd.notna(row.get("market_cap"))
-                        else cached.get("market_cap")
+                    "name": (
+                        row.get("name")
+                        or metadata.get("name")
+                        or cached.get("name")
+                        or ticker
                     ),
+                    "sector": sector,
+                    "market_cap": market_cap_value,
                     "close_price": float(close_price),
                     "daily_return": daily_return,
                     "weekly_return": weekly_return,
@@ -355,11 +420,21 @@ class KoreaCollector(BaseCollector):
                         if pd.notna(volume)
                         else cached.get("last_volume")
                     ),
-                    "avg_volume_20d": cached.get("avg_volume_20d"),
+                    "avg_volume_20d": (
+                        cached.get("avg_volume_20d")
+                        if cached.get("avg_volume_20d") is not None
+                        else metadata.get("avg_volume_20d")
+                    ),
                 }
             )
 
         df = pd.DataFrame(rows)
+        if not df.empty:
+            generic_count = int((df["sector"] == "기타").sum())
+            logger.info(
+                f"[KR] {market} FDR sector coverage: "
+                f"{df['sector'].nunique()} sectors, {generic_count}/{len(df)} generic"
+            )
         logger.warning(f"[KR] {market} recovered via FinanceDataReader: {len(df)} rows")
         return df
 

@@ -221,3 +221,74 @@ class CollectorResilienceTests(unittest.TestCase):
         self.assertEqual(actual.iloc[0]["sector"], "정보기술")
         self.assertEqual(actual.iloc[0]["market_cap"], 330_000_000_000_000.0)
         self.assertEqual(actual.iloc[0]["weekly_return"], 10.0)
+
+    def test_korea_fdr_fallback_uses_krx_listing_sector_metadata(self) -> None:
+        collector = KoreaCollector()
+        invalid_ohlcv = pd.DataFrame({"foo": [1]}, index=["005930"])
+
+        def stock_listing(symbol):
+            if symbol == "KRX-MARCAP":
+                return pd.DataFrame(
+                    [
+                        {
+                            "Code": "005930",
+                            "Name": "삼성전자",
+                            "Close": 110.0,
+                            "Volume": 1_200_000.0,
+                            "ChagesRatio": 5.0,
+                            "Marcap": 330_000_000.0,
+                            "Market": "KOSPI",
+                        }
+                    ]
+                )
+            if symbol == "KRX":
+                return pd.DataFrame(
+                    [
+                        {
+                            "Code": "005930",
+                            "Name": "삼성전자",
+                            "Sector": "반도체 및 관련장비",
+                            "Market": "KOSPI",
+                        }
+                    ]
+                )
+            if symbol == "KOSPI":
+                return pd.DataFrame(
+                    [
+                        {
+                            "Code": "005930",
+                            "Name": "삼성전자",
+                        }
+                    ]
+                )
+            return pd.DataFrame()
+
+        fake_fdr = types.ModuleType("FinanceDataReader")
+        fake_fdr.StockListing = stock_listing
+
+        with patch.dict(sys.modules, {"FinanceDataReader": fake_fdr}):
+            with patch(
+                "src.collectors.korea.krx.get_market_ohlcv",
+                return_value=invalid_ohlcv,
+            ):
+                with patch.object(
+                    collector,
+                    "_load_cached_universe_map",
+                    return_value={},
+                ):
+                    with patch.object(
+                        collector,
+                        "_get_cached_metadata",
+                        return_value={},
+                    ):
+                        with patch.object(
+                            collector,
+                            "_load_cached_close_map",
+                            return_value={},
+                        ):
+                            with patch("src.collectors.korea.time.sleep", return_value=None):
+                                actual = collector._fetch_market("20260421", "KOSPI")
+
+        self.assertEqual(len(actual), 1)
+        self.assertEqual(actual.iloc[0]["ticker"], "005930")
+        self.assertEqual(actual.iloc[0]["sector"], "정보기술")

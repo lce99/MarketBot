@@ -1,6 +1,7 @@
 """벤치마크 수집기 - yfinance로 섹터 ETF/인덱스 수집"""
 
 import logging
+import time
 from datetime import datetime, timedelta
 
 import yfinance as yf
@@ -9,6 +10,43 @@ from src.config import BENCHMARK_TICKERS
 from src.database import get_connection, init_db, upsert_benchmark_daily
 
 logger = logging.getLogger(__name__)
+
+
+def _download_with_retries(
+    tickers_str: str,
+    start: str,
+    end: str,
+    attempts: int = 3,
+) -> object:
+    """Download benchmark prices with backoff for transient yfinance failures."""
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            data = yf.download(
+                tickers_str,
+                start=start,
+                end=end,
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+            if not data.empty:
+                return data
+            last_error = RuntimeError("벤치마크 데이터 없음")
+        except Exception as exc:
+            last_error = exc
+
+        if attempt < attempts:
+            sleep_seconds = attempt * 20
+            logger.warning(
+                f"벤치마크 다운로드 재시도 {attempt}/{attempts - 1}: {last_error}"
+            )
+            time.sleep(sleep_seconds)
+
+    if last_error is None:
+        raise RuntimeError("벤치마크 다운로드 실패")
+    raise last_error
 
 
 def collect_benchmarks(date: str | None = None) -> int:
@@ -31,14 +69,7 @@ def collect_benchmarks(date: str | None = None) -> int:
     logger.info(f"벤치마크 수집: {len(BENCHMARK_TICKERS)}개 티커")
 
     try:
-        data = yf.download(
-            tickers_str,
-            start=start,
-            end=end,
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-        )
+        data = _download_with_retries(tickers_str, start, end)
     except Exception as e:
         logger.error(f"벤치마크 다운로드 실패: {e}")
         raise RuntimeError("벤치마크 다운로드 실패") from e

@@ -421,12 +421,25 @@ def upsert_instrument_universe(
             :last_seen_date, :last_is_filtered, :last_is_abnormal, :updated_at
         )
         ON CONFLICT(country, ticker) DO UPDATE SET
-            name = excluded.name,
-            sector = excluded.sector,
-            market_cap = excluded.market_cap,
+            name = CASE
+                WHEN excluded.name IS NULL OR TRIM(excluded.name) = ''
+                    THEN instrument_universe.name
+                ELSE excluded.name
+            END,
+            sector = CASE
+                WHEN excluded.sector IS NULL
+                  OR TRIM(excluded.sector) = ''
+                  OR excluded.sector = '기타'
+                    THEN instrument_universe.sector
+                ELSE excluded.sector
+            END,
+            market_cap = COALESCE(excluded.market_cap, instrument_universe.market_cap),
             last_close_price = excluded.last_close_price,
             last_volume = excluded.last_volume,
-            avg_volume_20d = excluded.avg_volume_20d,
+            avg_volume_20d = COALESCE(
+                excluded.avg_volume_20d,
+                instrument_universe.avg_volume_20d
+            ),
             last_seen_date = excluded.last_seen_date,
             last_is_filtered = excluded.last_is_filtered,
             last_is_abnormal = excluded.last_is_abnormal,
@@ -471,9 +484,19 @@ def upsert_instrument_metadata(
             :source, :last_refreshed_at
         )
         ON CONFLICT(country, ticker) DO UPDATE SET
-            name = excluded.name,
-            sector = excluded.sector,
-            market_cap = excluded.market_cap,
+            name = CASE
+                WHEN excluded.name IS NULL OR TRIM(excluded.name) = ''
+                    THEN instrument_metadata.name
+                ELSE excluded.name
+            END,
+            sector = CASE
+                WHEN excluded.sector IS NULL
+                  OR TRIM(excluded.sector) = ''
+                  OR excluded.sector = '기타'
+                    THEN instrument_metadata.sector
+                ELSE excluded.sector
+            END,
+            market_cap = COALESCE(excluded.market_cap, instrument_metadata.market_cap),
             source = excluded.source,
             last_refreshed_at = excluded.last_refreshed_at
         """,

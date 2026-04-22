@@ -95,10 +95,6 @@ jobs:
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
         run: python -m scripts.collect --market ${{ steps.market.outputs.market }}
 
-      - name: Collect benchmarks
-        if: steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL'
-        run: python -m scripts.collect --market BENCHMARK
-
       - name: Checkpoint database
         run: python -m scripts.checkpoint_db
 
@@ -118,3 +114,26 @@ jobs:
           git add data/marketbot.db
           git diff --cached --quiet || git commit -m "data: ${{ steps.market.outputs.market }} $(date -u +%Y-%m-%d)"
           git push
+
+      - name: Collect benchmarks
+        id: benchmark
+        if: steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL'
+        continue-on-error: true
+        run: python -m scripts.collect --market BENCHMARK
+
+      - name: Checkpoint benchmark database
+        if: steps.benchmark.outcome == 'success'
+        run: python -m scripts.checkpoint_db
+
+      - name: Commit benchmark database
+        if: steps.benchmark.outcome == 'success'
+        run: |
+          git config user.name "MarketBot"
+          git config user.email "marketbot@github.com"
+          git add data/marketbot.db
+          git diff --cached --quiet || git commit -m "data: BENCHMARK $(date -u +%Y-%m-%d)"
+          git push
+
+      - name: Note benchmark failure
+        if: steps.benchmark.outcome == 'failure'
+        run: echo "Benchmark collection failed after primary market data commit."
