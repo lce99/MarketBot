@@ -330,22 +330,35 @@ class KoreaCollector(BaseCollector):
             return None
 
         market_listing = pd.DataFrame()
-        krx_listing = pd.DataFrame()
-        try:
-            krx_listing = self._normalize_fdr_listing(fdr.StockListing("KRX"))
-        except Exception as exc:
-            logger.warning(f"[KR] KRX FDR listing unavailable: {exc}")
+        for listing_name, label in (
+            (f"{market}-DESC", f"{market}-DESC"),
+            ("KRX-DESC", "KRX-DESC"),
+            (market, market),
+            ("KRX", "KRX"),
+        ):
+            try:
+                listing_frame = self._normalize_fdr_listing(
+                    fdr.StockListing(listing_name)
+                )
+            except Exception as exc:
+                logger.warning(f"[KR] {label} FDR listing unavailable: {exc}")
+                continue
 
-        try:
-            market_listing = self._normalize_fdr_listing(fdr.StockListing(market))
-        except Exception as exc:
-            logger.warning(f"[KR] {market} FDR listing unavailable: {exc}")
+            if listing_frame.empty:
+                continue
 
-        if not krx_listing.empty:
-            snapshot = self._merge_listing_metadata(snapshot, krx_listing)
+            snapshot = self._merge_listing_metadata(snapshot, listing_frame)
+            if market_listing.empty and "market" in listing_frame.columns:
+                market_mask = (
+                    listing_frame["market"].astype(str).str.upper() == market
+                )
+                scoped_listing = listing_frame[market_mask].copy()
+                if not scoped_listing.empty:
+                    market_listing = scoped_listing
+            if market_listing.empty and label.startswith(market):
+                market_listing = listing_frame
 
         if not market_listing.empty:
-            snapshot = self._merge_listing_metadata(snapshot, market_listing)
             tickers = set(market_listing["ticker"].tolist())
             snapshot = snapshot[snapshot["ticker"].isin(tickers)].copy()
         elif "market" in snapshot.columns:

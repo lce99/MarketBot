@@ -113,6 +113,7 @@ jobs:
           git config user.email "marketbot@github.com"
           git add data/marketbot.db
           git diff --cached --quiet || git commit -m "data: ${{ steps.market.outputs.market }} $(date -u +%Y-%m-%d)"
+          git pull --rebase origin main
           git push
 
       - name: Collect benchmarks
@@ -132,6 +133,7 @@ jobs:
           git config user.email "marketbot@github.com"
           git add data/marketbot.db
           git diff --cached --quiet || git commit -m "data: BENCHMARK $(date -u +%Y-%m-%d)"
+          git pull --rebase origin main
           git push
 
       - name: Note benchmark failure

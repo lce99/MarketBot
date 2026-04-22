@@ -241,7 +241,7 @@ class CollectorResilienceTests(unittest.TestCase):
                         }
                     ]
                 )
-            if symbol == "KRX":
+            if symbol == "KOSPI-DESC":
                 return pd.DataFrame(
                     [
                         {
