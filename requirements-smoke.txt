@@ -1,0 +1,8 @@
+# Minimal dependency set for unit/smoke tests.
+# Collector tests patch optional providers like vnstock, tushare, and FinanceDataReader,
+# so smoke CI only installs packages that are imported at module import time.
+pandas>=2.0.0
+pykrx>=1.0.45
+finnhub-python>=2.4.0
+yfinance>=0.2.30
+python-telegram-bot>=20.0
