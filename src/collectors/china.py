@@ -10,6 +10,7 @@ from datetime import datetime
 
 import pandas as pd
 
+from src.collection_failures import CollectionFailure
 from src.collectors.base import BaseCollector
 from src.collectors.date_utils import compute_return_pct, recent_dates
 from src.config import TUSHARE_TOKEN
@@ -58,17 +59,42 @@ CN_SECTOR_MAP = {
 class ChinaCollector(BaseCollector):
     country_code = "CN"
 
+    def preflight(self, date: str) -> None:
+        if TUSHARE_TOKEN:
+            return
+
+        raise CollectionFailure(
+            message="TUSHARE_TOKEN 환경변수가 비어 있습니다.",
+            failure_code="missing_credentials",
+            failure_stage="preflight",
+            provider="tushare",
+            raw_error_excerpt="TUSHARE_TOKEN is empty",
+            run_mode=self.get_run_mode(),
+        )
+
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
         """SSE + SZSE 전종목 수집 via tushare."""
         try:
             import tushare as ts
         except ImportError:
-            logger.error("tushare 미설치. pip install tushare")
-            return pd.DataFrame()
+            raise CollectionFailure(
+                message="tushare 미설치. pip install tushare",
+                failure_code="provider_error",
+                failure_stage="import_provider",
+                provider="tushare",
+                raw_error_excerpt="tushare import failed",
+                run_mode=self.get_run_mode(),
+            )
 
         if not TUSHARE_TOKEN:
-            logger.error("TUSHARE_TOKEN 환경변수 미설정")
-            return pd.DataFrame()
+            raise CollectionFailure(
+                message="TUSHARE_TOKEN 환경변수가 비어 있습니다.",
+                failure_code="missing_credentials",
+                failure_stage="preflight",
+                provider="tushare",
+                raw_error_excerpt="TUSHARE_TOKEN is empty",
+                run_mode=self.get_run_mode(),
+            )
 
         ts.set_token(TUSHARE_TOKEN)
         pro = ts.pro_api()
@@ -180,9 +206,11 @@ class ChinaCollector(BaseCollector):
             logger.info(f"[CN] 전종목: {len(df)}개")
             return df
 
+        except CollectionFailure:
+            raise
         except Exception as e:
             logger.error(f"[CN] 수집 실패: {e}", exc_info=True)
-            return pd.DataFrame()
+            raise
 
     def _fetch_recent_daily_snapshots(
         self,

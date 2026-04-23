@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from src.collection_failures import CollectionFailure
+from src.collectors.china import ChinaCollector
 from src.collectors.korea import KoreaCollector
 from src.collectors.vietnam import VietnamCollector
 
@@ -373,3 +375,30 @@ class CollectorResilienceTests(unittest.TestCase):
 
         self.assertIn("005930", mapping)
         self.assertEqual(mapping["005930"], "정보기술")
+
+    def test_china_preflight_requires_tushare_token(self) -> None:
+        collector = ChinaCollector()
+
+        with patch("src.collectors.china.TUSHARE_TOKEN", ""):
+            with self.assertRaises(CollectionFailure) as ctx:
+                collector.preflight("2026-04-21")
+
+        self.assertEqual(ctx.exception.failure_code, "missing_credentials")
+        self.assertEqual(ctx.exception.failure_stage, "preflight")
+
+    def test_vietnam_call_provider_classifies_rate_limit_abort(self) -> None:
+        collector = VietnamCollector()
+
+        def provider_call():
+            print("Rate limit exceeded. Wait to retry.")
+            raise SystemExit(1)
+
+        with self.assertRaises(CollectionFailure) as ctx:
+            collector._call_provider(
+                provider_call,
+                stage="fetch_history",
+                context_label="Quote API (KBS) VCB",
+            )
+
+        self.assertEqual(ctx.exception.failure_code, "provider_rate_limited")
+        self.assertEqual(ctx.exception.failure_stage, "fetch_history")

@@ -8,6 +8,7 @@ from datetime import datetime
 
 from telegram import Bot
 
+from src.collection_status import get_failure_label
 from src.config import (
     COUNTRIES,
     STATUS_STALE_AFTER_DAYS,
@@ -90,6 +91,8 @@ def get_operational_status(
                 "last_success_at": latest_success["timestamp"] if latest_success else None,
                 "last_failure_at": latest_failure["timestamp"] if latest_failure else None,
                 "last_failure_error": latest_failure["error_message"] if latest_failure else None,
+                "last_failure_code": latest_failure.get("failure_code") if latest_failure else None,
+                "last_failure_stage": latest_failure.get("failure_stage") if latest_failure else None,
                 "latest_data_date": latest_data_date,
                 "age_days": age_days,
             })
@@ -127,8 +130,8 @@ def format_status_report(
     ]
 
     lines = [
-        f"\U0001f6e0 운영 상태 ({snapshot['as_of_date']} UTC)",
-        "\u2501" * 20,
+        f"🛠 운영 상태 ({snapshot['as_of_date']} UTC)",
+        "━" * 20,
         (
             f"정상 {snapshot['counts']['OK']} | "
             f"실패 {snapshot['counts']['ERROR']} | "
@@ -142,9 +145,11 @@ def format_status_report(
         market for market in status_rows if market["state"] in {"ERROR", "STALE", "NO_DATA"}
     ]
     if problem_markets:
-        lines.append("\u26a0\ufe0f 주의 시장")
+        lines.append("⚠️ 주의 시장")
         for market in problem_markets:
             detail_parts = []
+            if market["last_failure_code"]:
+                detail_parts.append(get_failure_label(market["last_failure_code"]))
             if market["latest_data_date"]:
                 detail_parts.append(f"마지막 데이터 {market['latest_data_date']}")
             if market["last_success_at"]:
@@ -161,20 +166,22 @@ def format_status_report(
         lines.append("")
 
     if snapshot["recent_failures"] and market_filter is None:
-        lines.append("\U0001f4db 최근 실패 로그")
+        lines.append("📝 최근 실패 로그")
         for row in snapshot["recent_failures"][:3]:
             error = row["error_message"] or "원인 미상"
+            failure_label = get_failure_label(row.get("failure_code"))
             lines.append(
-                f"  - {row['market']} | {row['timestamp'][:16]} UTC | {error[:80]}"
+                f"  - {row['market']} | {row['timestamp'][:16]} UTC | "
+                f"{failure_label} | {error[:80]}"
             )
         lines.append("")
 
-    lines.append("\U0001f4ca 시장별 상태")
+    lines.append("📊 시장별 상태")
     state_icon = {
-        "OK": "\u2705",
-        "ERROR": "\u274c",
-        "STALE": "\u26a0\ufe0f",
-        "NO_DATA": "\u2753",
+        "OK": "✅",
+        "ERROR": "❌",
+        "STALE": "⚠️",
+        "NO_DATA": "❓",
     }
     for market in status_rows:
         latest_data = market["latest_data_date"] or "-"
@@ -193,7 +200,7 @@ def format_failure_alert(
 ) -> str:
     """Render a failure alert for operators."""
     lines = [
-        f"\u26a0\ufe0f MarketBot 수집 실패 ({as_of_date or datetime.utcnow().strftime('%Y-%m-%d')})",
+        f"⚠️ MarketBot 수집 실패 ({as_of_date or datetime.utcnow().strftime('%Y-%m-%d')})",
         f"실패 시장: {', '.join(failed_markets)}",
         "",
         format_status_report(as_of_date=as_of_date, markets=failed_markets),
@@ -216,6 +223,6 @@ def send_admin_alert(text: str) -> bool:
         asyncio.run(_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID, text))
         logger.info("관리자 알림 전송 완료")
         return True
-    except Exception as e:
-        logger.error(f"관리자 알림 전송 실패: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(f"관리자 알림 전송 실패: {exc}", exc_info=True)
         return False

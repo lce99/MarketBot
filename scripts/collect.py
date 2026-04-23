@@ -27,6 +27,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def positive_int(value: str) -> int:
+    """Argparse type that accepts only positive integers."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("양수만 입력할 수 있습니다.")
+    return parsed
+
+
 def get_collector(market: str):
     """국가 코드에 맞는 수집기 인스턴스 반환."""
     if market == "KR":
@@ -56,6 +64,30 @@ def get_collector(market: str):
         raise ValueError(f"지원하지 않는 시장: {market}")
 
 
+def configure_collector(collector, market: str, args) -> None:
+    """Apply optional runtime controls to collectors that support them."""
+    requested_mode = args.mode.lower() if args.mode else None
+    wants_manual_controls = (
+        requested_mode is not None
+        or args.max_tickers is not None
+        or args.resume_from_checkpoint
+    )
+    if not wants_manual_controls:
+        return
+
+    configure = getattr(collector, "configure_collection", None)
+    if configure is None:
+        raise ValueError(
+            f"{market} 시장은 --mode/--max-tickers/--resume-from-checkpoint를 지원하지 않습니다."
+        )
+
+    configure(
+        mode=requested_mode,
+        max_tickers=args.max_tickers,
+        resume_from_checkpoint=args.resume_from_checkpoint,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="MarketBot 데이터 수집")
     parser.add_argument(
@@ -65,6 +97,26 @@ def main():
     parser.add_argument(
         "--date", default=None,
         help="수집 날짜 (YYYY-MM-DD). 미지정 시 오늘."
+    )
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="실제 수집 전에 사전 점검만 수행한다.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("full", "incremental", "seed"),
+        help="VN 수집 모드 강제 지정.",
+    )
+    parser.add_argument(
+        "--max-tickers",
+        type=positive_int,
+        help="1회 실행에서 처리할 최대 종목 수.",
+    )
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        action="store_true",
+        help="저장된 checkpoint부터 수집을 재개한다.",
     )
     args = parser.parse_args()
 
@@ -85,6 +137,13 @@ def main():
                 logger.info(f"[BENCHMARK] 수집 성공 ({saved_rows}개)")
             else:
                 collector = get_collector(market)
+                configure_collector(collector, market, args)
+                if args.preflight_only:
+                    success = collector.run_preflight(date=date)
+                    if success:
+                        logger.info(f"[{market}] preflight 성공")
+                    continue
+
                 success = collector.run(date=date)
                 if not success:
                     failed_markets.append(market)
@@ -101,6 +160,8 @@ def main():
     if failed_markets:
         send_failure_alert(failed_markets, date)
         failed_list = ", ".join(failed_markets)
+        if args.preflight_only:
+            raise SystemExit(f"preflight 실패 시장: {failed_list}")
         raise SystemExit(f"수집 실패/데이터 없음 시장: {failed_list}")
 
 

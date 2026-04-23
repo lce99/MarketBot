@@ -8,6 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 
+from src.collection_failures import CollectionFailure, summarize_raw_error
 from src.config import (
     COUNTRIES,
     INSTRUMENT_METADATA_REFRESH_WEEKDAY,
@@ -42,6 +43,95 @@ class BaseCollector(ABC):
         """Fetch all stocks for the market and return them as a DataFrame."""
         raise NotImplementedError
 
+    def preflight(self, date: str) -> None:
+        """Validate prerequisites before the collector hits external providers."""
+        return None
+
+    def get_run_mode(self) -> str:
+        """Return the current collection mode for logging."""
+        return getattr(self, "run_mode", "standard")
+
+    def get_provider_name(self) -> str:
+        """Return the provider label used in collection_log."""
+        return COUNTRIES[self.country_code].get("collector", self.country_code.lower())
+
+    def _to_collection_failure(
+        self,
+        exc: BaseException,
+        *,
+        default_stage: str,
+    ) -> CollectionFailure:
+        if isinstance(exc, CollectionFailure):
+            return CollectionFailure(
+                message=str(exc),
+                failure_code=exc.failure_code,
+                failure_stage=exc.failure_stage or default_stage,
+                provider=exc.provider or self.get_provider_name(),
+                raw_error_excerpt=exc.raw_error_excerpt or str(exc),
+                run_mode=exc.run_mode or self.get_run_mode(),
+            )
+
+        message = str(exc).strip() or exc.__class__.__name__
+        if isinstance(exc, SystemExit) and message in {"", "0", "1"}:
+            message = "공급자 프로세스가 비정상 종료되었습니다."
+
+        return CollectionFailure(
+            message=message,
+            failure_code="unexpected_exception",
+            failure_stage=default_stage,
+            provider=self.get_provider_name(),
+            raw_error_excerpt=summarize_raw_error(str(exc)),
+            run_mode=self.get_run_mode(),
+        )
+
+    def _log_failure(
+        self,
+        summary_conn,
+        failure: CollectionFailure,
+    ) -> None:
+        log_collection(
+            summary_conn,
+            self.country_code,
+            "failed",
+            error=str(failure),
+            failure_code=failure.failure_code,
+            failure_stage=failure.failure_stage,
+            run_mode=failure.run_mode or self.get_run_mode(),
+            provider=failure.provider or self.get_provider_name(),
+            raw_error_excerpt=failure.raw_error_excerpt,
+        )
+
+    def run_preflight(self, date: str | None = None) -> bool:
+        """Run only the validation stage and persist structured failures."""
+        if date is None:
+            date = datetime.utcnow().strftime("%Y-%m-%d")
+        self.effective_date = date
+
+        country = self.country_code
+        info = COUNTRIES[country]
+        logger.info(f"[{info['flag']} {info['name_kr']}] preflight started: {date}")
+
+        init_db()
+        summary_conn = get_connection()
+        try:
+            self.preflight(date)
+            logger.info(f"[{country}] preflight passed")
+            return True
+        except SystemExit as exc:
+            failure = self._to_collection_failure(exc, default_stage="preflight")
+            self._log_failure(summary_conn, failure)
+            summary_conn.commit()
+            logger.error(f"[{country}] preflight failed: {failure}", exc_info=True)
+            raise failure
+        except Exception as exc:
+            failure = self._to_collection_failure(exc, default_stage="preflight")
+            self._log_failure(summary_conn, failure)
+            summary_conn.commit()
+            logger.error(f"[{country}] preflight failed: {failure}", exc_info=True)
+            raise failure
+        finally:
+            summary_conn.close()
+
     def run(self, date: str | None = None) -> bool:
         """Run the end-to-end collection pipeline for one market."""
         if date is None:
@@ -53,14 +143,25 @@ class BaseCollector(ABC):
         logger.info(f"[{info['flag']} {info['name_kr']}] collection started: {date}")
 
         init_db()
-        init_raw_db()
         summary_conn = get_connection()
-        raw_conn = get_raw_connection()
+        raw_conn = None
 
         try:
+            self.preflight(date)
+
+            init_raw_db()
+            raw_conn = get_raw_connection()
             df = self.fetch_all_stocks(date)
             if df.empty:
-                log_collection(summary_conn, country, "failed", error="데이터 없음")
+                failure = CollectionFailure(
+                    message="데이터 없음",
+                    failure_code="no_data",
+                    failure_stage="fetch_all_stocks",
+                    provider=self.get_provider_name(),
+                    run_mode=self.get_run_mode(),
+                    raw_error_excerpt="collector returned an empty dataframe",
+                )
+                self._log_failure(summary_conn, failure)
                 summary_conn.commit()
                 logger.warning(f"[{country}] no data returned")
                 return False
@@ -116,6 +217,8 @@ class BaseCollector(ABC):
                 total=total,
                 filtered=filtered_count,
                 abnormal=abnormal_count,
+                run_mode=self.get_run_mode(),
+                provider=self.get_provider_name(),
             )
             raw_conn.commit()
             summary_conn.commit()
@@ -125,14 +228,22 @@ class BaseCollector(ABC):
             )
             return True
 
-        except Exception as exc:
-            log_collection(summary_conn, country, "failed", error=str(exc))
+        except SystemExit as exc:
+            failure = self._to_collection_failure(exc, default_stage="run")
+            self._log_failure(summary_conn, failure)
             summary_conn.commit()
-            logger.error(f"[{country}] collection failed: {exc}", exc_info=True)
-            raise
+            logger.error(f"[{country}] collection failed: {failure}", exc_info=True)
+            raise failure
+        except Exception as exc:
+            failure = self._to_collection_failure(exc, default_stage="run")
+            self._log_failure(summary_conn, failure)
+            summary_conn.commit()
+            logger.error(f"[{country}] collection failed: {failure}", exc_info=True)
+            raise failure
         finally:
             summary_conn.close()
-            raw_conn.close()
+            if raw_conn is not None:
+                raw_conn.close()
 
     def _is_metadata_refresh_due(self, date: str) -> bool:
         """Return True when the weekly metadata refresh should run."""

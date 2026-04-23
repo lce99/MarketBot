@@ -17,6 +17,7 @@ import finnhub
 import pandas as pd
 import yfinance as yf
 
+from src.collection_failures import CollectionFailure
 from src.collectors.base import BaseCollector
 from src.collectors.date_utils import compute_period_return_from_closes
 from src.config import (
@@ -71,6 +72,20 @@ class FinnhubCollector(BaseCollector):
         self._client = finnhub.Client(api_key=FINNHUB_API_KEY)
         self._call_count = 0
         self._last_reset = time.time()
+        self.run_mode = "standard"
+
+    def preflight(self, date: str) -> None:
+        if self.country_code != "US" or FINNHUB_API_KEY:
+            return
+
+        raise CollectionFailure(
+            message="FINNHUB_API_KEY 환경변수가 비어 있습니다.",
+            failure_code="missing_credentials",
+            failure_stage="preflight",
+            provider="finnhub",
+            raw_error_excerpt="FINNHUB_API_KEY is empty",
+            run_mode=self.get_run_mode(),
+        )
 
     def _rate_limit(self):
         """60콜/분 제한 준수."""

@@ -98,7 +98,28 @@ def init_db() -> None:
             total_stocks INTEGER,
             filtered_stocks INTEGER,
             abnormal_stocks INTEGER,
-            error_message TEXT
+            error_message TEXT,
+            failure_code TEXT,
+            failure_stage TEXT,
+            run_mode TEXT,
+            provider TEXT,
+            raw_error_excerpt TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_checkpoint (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market TEXT NOT NULL,
+            requested_date TEXT NOT NULL,
+            run_mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            next_index INTEGER DEFAULT 0,
+            batch_number INTEGER DEFAULT 0,
+            last_ticker TEXT,
+            saved_rows INTEGER DEFAULT 0,
+            total_tickers INTEGER DEFAULT 0,
+            payload_json TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(market, requested_date, run_mode)
         );
 
         CREATE TABLE IF NOT EXISTS instrument_universe (
@@ -144,12 +165,19 @@ def init_db() -> None:
             ON benchmark_daily(country, date);
         CREATE INDEX IF NOT EXISTS idx_trend_date
             ON trend_scores(date);
+        CREATE INDEX IF NOT EXISTS idx_collection_checkpoint_lookup
+            ON collection_checkpoint(market, requested_date, status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_universe_country
             ON instrument_universe(country, last_seen_date);
         CREATE INDEX IF NOT EXISTS idx_metadata_country
             ON instrument_metadata(country, last_refreshed_at);
         """
     )
+    _ensure_column(conn, "collection_log", "failure_code", "TEXT")
+    _ensure_column(conn, "collection_log", "failure_stage", "TEXT")
+    _ensure_column(conn, "collection_log", "run_mode", "TEXT")
+    _ensure_column(conn, "collection_log", "provider", "TEXT")
+    _ensure_column(conn, "collection_log", "raw_error_excerpt", "TEXT")
     conn.commit()
     conn.close()
 
@@ -196,6 +224,26 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _column_exists(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
+    if _column_exists(conn, table_name, column_name):
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def _build_abnormal_rows(stock_rows: list[dict]) -> list[dict]:
@@ -504,6 +552,131 @@ def upsert_instrument_metadata(
     )
 
 
+def upsert_collection_checkpoint(
+    conn: sqlite3.Connection,
+    market: str,
+    requested_date: str,
+    run_mode: str,
+    *,
+    status: str,
+    next_index: int,
+    batch_number: int,
+    last_ticker: str | None,
+    saved_rows: int,
+    total_tickers: int,
+    payload: dict | None = None,
+) -> None:
+    """Persist one resumable collection checkpoint."""
+    payload_json = None
+    if payload is not None:
+        payload_json = json.dumps(payload, ensure_ascii=False, default=str)
+
+    conn.execute(
+        """
+        INSERT INTO collection_checkpoint (
+            market, requested_date, run_mode, status,
+            next_index, batch_number, last_ticker, saved_rows,
+            total_tickers, payload_json, updated_at
+        )
+        VALUES (
+            :market, :requested_date, :run_mode, :status,
+            :next_index, :batch_number, :last_ticker, :saved_rows,
+            :total_tickers, :payload_json, :updated_at
+        )
+        ON CONFLICT(market, requested_date, run_mode) DO UPDATE SET
+            status = excluded.status,
+            next_index = excluded.next_index,
+            batch_number = excluded.batch_number,
+            last_ticker = excluded.last_ticker,
+            saved_rows = excluded.saved_rows,
+            total_tickers = excluded.total_tickers,
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        """,
+        {
+            "market": market,
+            "requested_date": requested_date,
+            "run_mode": run_mode,
+            "status": status,
+            "next_index": next_index,
+            "batch_number": batch_number,
+            "last_ticker": last_ticker,
+            "saved_rows": saved_rows,
+            "total_tickers": total_tickers,
+            "payload_json": payload_json,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
+
+
+def get_collection_checkpoint(
+    conn: sqlite3.Connection,
+    market: str,
+    *,
+    requested_date: str | None = None,
+    run_mode: str | None = None,
+    status: str | None = "pending",
+) -> Optional[dict]:
+    """Return the most recent checkpoint for one market/date."""
+    clauses = ["market = ?"]
+    params: list[str] = [market]
+
+    if requested_date is not None:
+        clauses.append("requested_date = ?")
+        params.append(requested_date)
+    if run_mode is not None:
+        clauses.append("run_mode = ?")
+        params.append(run_mode)
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+
+    row = conn.execute(
+        f"""
+        SELECT *
+        FROM collection_checkpoint
+        WHERE {' AND '.join(clauses)}
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    if row is None:
+        return None
+
+    result = dict(row)
+    payload_json = result.get("payload_json")
+    result["payload"] = json.loads(payload_json) if payload_json else {}
+    return result
+
+
+def delete_collection_checkpoint(
+    conn: sqlite3.Connection,
+    market: str,
+    *,
+    requested_date: str | None = None,
+    run_mode: str | None = None,
+) -> None:
+    """Delete checkpoints once a run no longer needs resume state."""
+    clauses = ["market = ?"]
+    params: list[str] = [market]
+
+    if requested_date is not None:
+        clauses.append("requested_date = ?")
+        params.append(requested_date)
+    if run_mode is not None:
+        clauses.append("run_mode = ?")
+        params.append(run_mode)
+
+    conn.execute(
+        f"""
+        DELETE FROM collection_checkpoint
+        WHERE {' AND '.join(clauses)}
+        """,
+        params,
+    )
+
+
 def replace_abnormal_stocks(
     conn: sqlite3.Connection,
     date: str,
@@ -580,17 +753,36 @@ def log_collection(
     filtered: int = 0,
     abnormal: int = 0,
     error: Optional[str] = None,
+    failure_code: Optional[str] = None,
+    failure_stage: Optional[str] = None,
+    run_mode: Optional[str] = None,
+    provider: Optional[str] = None,
+    raw_error_excerpt: Optional[str] = None,
 ) -> None:
     """Append one collection log entry."""
     conn.execute(
         """
         INSERT INTO collection_log (
             timestamp, market, status, total_stocks,
-            filtered_stocks, abnormal_stocks, error_message
+            filtered_stocks, abnormal_stocks, error_message,
+            failure_code, failure_stage, run_mode, provider, raw_error_excerpt
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (datetime.utcnow().isoformat(), market, status, total, filtered, abnormal, error),
+        (
+            datetime.utcnow().isoformat(),
+            market,
+            status,
+            total,
+            filtered,
+            abnormal,
+            error,
+            failure_code,
+            failure_stage,
+            run_mode,
+            provider,
+            raw_error_excerpt,
+        ),
     )
 
 
@@ -796,13 +988,17 @@ def get_recent_collection_logs(
     conn: sqlite3.Connection,
     limit: int = 10,
     status: Optional[str] = None,
+    market: Optional[str] = None,
 ) -> list[dict]:
     """Return recent collection logs, optionally filtered by status."""
-    query = "SELECT * FROM collection_log"
+    query = "SELECT * FROM collection_log WHERE 1=1"
     params: list[object] = []
     if status:
-        query += " WHERE status = ?"
+        query += " AND status = ?"
         params.append(status)
+    if market:
+        query += " AND market = ?"
+        params.append(market)
     query += " ORDER BY timestamp DESC, id DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
