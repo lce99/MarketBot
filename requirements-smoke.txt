@@ -2,7 +2,9 @@
 # Collector tests patch optional providers like vnstock, tushare, and FinanceDataReader,
 # so smoke CI only installs packages that are imported at module import time.
 pandas>=2.0.0
-pykrx>=1.0.45
+# pykrx 1.2.7+ prints a KRX login warning during import-time session bootstrap.
+# Smoke tests only need the legacy market helpers used by KoreaCollector.
+pykrx==1.2.3
 finnhub-python>=2.4.0
 yfinance>=0.2.30
 python-telegram-bot>=20.0
