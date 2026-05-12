@@ -167,6 +167,45 @@ class ReportSmokeTests(unittest.TestCase):
 
         self.assertEqual(count, 2)
 
+    def test_prepare_report_data_defaults_to_latest_sector_date(self) -> None:
+        conn = database.get_connection()
+        database.upsert_sector_performance(
+            conn,
+            [
+                {
+                    "date": "2026-04-21",
+                    "country": "US",
+                    "sector": "정보기술",
+                    "daily_return": 2.0,
+                    "weekly_return": 4.0,
+                    "breadth": 0.8,
+                    "volume_change": 5.0,
+                    "stock_count": 100,
+                    "top_gainers": [{"name": "NVIDIA", "return": 5.0}],
+                    "top_losers": [],
+                    "collected_at": "2026-04-21T00:00:00",
+                }
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        report_script.prepare_report_data()
+
+        conn = database.get_connection()
+        latest_count = conn.execute(
+            "SELECT COUNT(*) FROM trend_scores WHERE date = ?",
+            ("2026-04-21",),
+        ).fetchone()[0]
+        stale_count = conn.execute(
+            "SELECT COUNT(*) FROM trend_scores WHERE date > ?",
+            ("2026-04-21",),
+        ).fetchone()[0]
+        conn.close()
+
+        self.assertEqual(latest_count, 1)
+        self.assertEqual(stale_count, 0)
+
     def test_prepare_report_data_averages_zero_weekly_returns(self) -> None:
         report_script.prepare_report_data(date="2026-04-20")
 
@@ -186,10 +225,68 @@ class ReportSmokeTests(unittest.TestCase):
 
         self.assertIn("글로벌 섹터 데일리 리포트", joined)
         self.assertIn("기준일 2026-04-20", joined)
+        self.assertIn("핵심 결론", joined)
+        self.assertIn("관심 후보", joined)
+        self.assertIn("관찰점수", joined)
         self.assertIn("미국", joined)
         self.assertIn("XLK +0.90% · 대비 +0.30%", joined)
         self.assertIn("기준선 KOSPI +0.15% (04-19)", joined)
         self.assertIn("비정상 급등/급락 1종목", joined)
+
+    def test_watch_candidates_are_scored_and_risky_leaders_are_separated(self) -> None:
+        conn = database.get_connection()
+        database.upsert_sector_performance(
+            conn,
+            [
+                {
+                    "date": "2026-04-22",
+                    "country": "US",
+                    "sector": "정보기술",
+                    "daily_return": 2.0,
+                    "weekly_return": 4.0,
+                    "breadth": 0.80,
+                    "volume_change": 7.0,
+                    "stock_count": 120,
+                    "top_gainers": [{"name": "NVIDIA", "return": 4.2}],
+                    "top_losers": [],
+                    "collected_at": "2026-04-22T00:00:00",
+                },
+                {
+                    "date": "2026-04-22",
+                    "country": "KR",
+                    "sector": "헬스케어",
+                    "daily_return": 1.0,
+                    "weekly_return": 1.0,
+                    "breadth": 0.20,
+                    "volume_change": 10.0,
+                    "stock_count": 20,
+                    "top_gainers": [{"name": "테마바이오", "return": 35.0}],
+                    "top_losers": [],
+                    "collected_at": "2026-04-22T00:00:00",
+                },
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        report_script.prepare_report_data(date="2026-04-22")
+        header = reporter.format_daily_report(date="2026-04-22")[0]
+
+        self.assertIn("NVIDIA 관찰점수", header)
+        self.assertIn("벤치 대비", header)
+        self.assertIn("제외/주의 신호", header)
+        self.assertIn("테마바이오", header)
+        self.assertIn("상승 확산 약함", header)
+        self.assertIn("대표 종목 과열", header)
+
+    def test_auto_daily_report_marks_stale_latest_data(self) -> None:
+        report_script.prepare_report_data()
+        messages = reporter.format_daily_report()
+        header = messages[0]
+
+        self.assertIn("데이터 신뢰도: 낮음", header)
+        self.assertIn("기준일", header)
+        self.assertIn("핵심 결론", header)
 
     def test_format_country_detail_returns_expected_market_section(self) -> None:
         detail = reporter.format_country_detail("KR", date="2026-04-20")

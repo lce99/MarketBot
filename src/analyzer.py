@@ -6,7 +6,6 @@
 """
 
 import logging
-from datetime import datetime
 
 from src.config import (
     COUNTRIES,
@@ -25,6 +24,14 @@ from src.database import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_analysis_date(conn, date: str | None) -> str | None:
+    if date is not None:
+        return date
+
+    row = conn.execute("SELECT MAX(date) FROM sector_performance").fetchone()
+    return row[0] if row and row[0] else None
+
+
 def compute_trend_scores(date: str | None = None):
     """모든 국가의 섹터 성과를 기반으로 글로벌 트렌드 스코어 계산.
 
@@ -32,18 +39,20 @@ def compute_trend_scores(date: str | None = None):
                   + (확산도 × 0.3)
                   + (주간모멘텀 × 0.3)
     """
-    if date is None:
-        date = datetime.utcnow().strftime("%Y-%m-%d")
-
     init_db()
     conn = get_connection()
+    date = _resolve_analysis_date(conn, date)
+    if date is None:
+        logger.warning("트렌드 스코어 계산 불가: 섹터 성과 데이터 없음")
+        conn.close()
+        return []
 
     # 해당 날짜의 모든 국가 섹터 성과
     all_perf = get_latest_sector_performance(conn, date=date)
     if not all_perf:
         logger.warning(f"트렌드 스코어 계산 불가: {date} 데이터 없음")
         conn.close()
-        return
+        return []
 
     # 섹터별로 국가 데이터 그룹화
     sector_data: dict[str, list[dict]] = {}

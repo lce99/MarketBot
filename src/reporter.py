@@ -7,11 +7,12 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 
-from src.config import COUNTRIES
+from src.config import COUNTRIES, STATUS_STALE_AFTER_DAYS
 from src.database import (
     get_abnormal_stocks,
     get_connection,
     get_latest_benchmarks,
+    get_latest_sector_dates_by_country,
     get_latest_sector_performance,
 )
 
@@ -25,6 +26,9 @@ COUNTRY_INDEX_LABELS = {
     "IN": "NIFTY 50",
     "DE": "DAX",
 }
+
+COUNTRY_ORDER = ["US", "KR", "CN", "JP", "VN", "IN", "DE"]
+UNSTABLE_COVERAGE_MARKETS = {"CN", "VN"}
 
 
 def _resolve_report_date(conn, date: str | None) -> str:
@@ -57,6 +61,24 @@ def _parse_top_gainers(value) -> list[dict]:
         return []
 
 
+def _parse_report_date(value: str) -> datetime.date | None:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _country_label(code: str) -> str:
+    info = COUNTRIES.get(code, {})
+    flag = info.get("flag", "")
+    name = info.get("name_kr", code)
+    return f"{flag} {name}".strip()
+
+
+def _format_country_list(codes: list[str]) -> str:
+    return ", ".join(_country_label(code) for code in codes) if codes else "-"
+
+
 def _benchmark_label(row: dict) -> str:
     if row.get("sector") is None:
         return COUNTRY_INDEX_LABELS.get(row["country"], row["ticker"].lstrip("^"))
@@ -73,6 +95,10 @@ def _format_signed_number(value: float | None, decimals: int = 0) -> str:
     if value is None:
         return "-"
     return f"{value:+.{decimals}f}"
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(min(value, high), low)
 
 
 def _format_benchmark_return(row: dict, report_date: str) -> str:
@@ -182,13 +208,293 @@ def _format_sector_brief(
     return "\n".join(lines)
 
 
+def _build_data_quality_lines(
+    conn,
+    report_date: str,
+    by_country: dict[str, list[dict]],
+    *,
+    include_auto_warning: bool,
+) -> tuple[list[str], bool]:
+    if not include_auto_warning:
+        return [], False
+
+    latest_dates = get_latest_sector_dates_by_country(conn)
+    report_dt = _parse_report_date(report_date)
+    age_days = None
+    if report_dt:
+        age_days = (datetime.utcnow().date() - report_dt).days
+
+    available_codes = [code for code in COUNTRY_ORDER if code in by_country]
+    lagging = [
+        f"{code} {latest_dates[code][5:]}"
+        for code in COUNTRY_ORDER
+        if latest_dates.get(code) and latest_dates[code] != report_date
+    ]
+    missing = [
+        code
+        for code in COUNTRY_ORDER
+        if code not in latest_dates
+    ]
+
+    issues = []
+    if age_days is not None and age_days > STATUS_STALE_AFTER_DAYS:
+        issues.append(f"기준일 {age_days}일 경과")
+    if lagging:
+        issues.append("이전 데이터 " + ", ".join(lagging))
+    if missing:
+        issues.append("미수집 " + ", ".join(missing))
+
+    is_low_quality = bool(issues)
+    quality = "낮음" if is_low_quality else "정상"
+    lines = [f"데이터 신뢰도: {quality}"]
+    if issues:
+        lines[0] += f" ({'; '.join(issues)})"
+    lines.append(f"최신 포함: {_format_country_list(available_codes)}")
+
+    unstable_missing = [
+        code
+        for code in COUNTRY_ORDER
+        if code in UNSTABLE_COVERAGE_MARKETS
+        and latest_dates.get(code) != report_date
+    ]
+    if unstable_missing:
+        lines.append(f"불안정 커버리지: {_format_country_list(unstable_missing)}")
+
+    return lines, is_low_quality
+
+
+def _format_trend_summary(rows: list[dict], *, reverse: bool = False, limit: int = 3) -> str:
+    selected = list(rows)
+    if reverse:
+        selected = list(reversed(selected))
+
+    parts = []
+    for row in selected:
+        score = row["trend_score"]
+        if reverse and score >= 0:
+            continue
+        if not reverse and score <= 0:
+            continue
+        parts.append(f"{row['sector']} {_format_signed_number(score)}")
+        if len(parts) >= limit:
+            break
+    return ", ".join(parts)
+
+
+def _format_perf_summary(rows: list[dict], *, reverse: bool = False, limit: int = 3) -> str:
+    filtered = [row for row in rows if row["sector"] != "기타"]
+    filtered.sort(
+        key=lambda row: (
+            row.get("daily_return") if row.get("daily_return") is not None else -999,
+            row.get("breadth") or 0,
+        ),
+        reverse=not reverse,
+    )
+
+    parts = []
+    for row in filtered:
+        ret = row.get("daily_return")
+        if reverse and (ret is None or ret >= 0):
+            continue
+        if not reverse and (ret is None or ret <= 0):
+            continue
+        parts.append(
+            f"{_country_label(row['country'])} {row['sector']} {_format_signed_pct(ret)}"
+        )
+        if len(parts) >= limit:
+            break
+    return ", ".join(parts)
+
+
+def _build_takeaway_lines(
+    trend_rows: list[dict],
+    all_perf: list[dict],
+    *,
+    is_low_quality: bool,
+) -> list[str]:
+    lines = ["핵심 결론"]
+    if is_low_quality:
+        lines.append("데이터가 오래되었거나 일부 시장이 빠져 있어 신규 판단은 보수적으로 봐야 합니다.")
+
+    strong = _format_trend_summary(trend_rows, limit=3) if trend_rows else ""
+    weak = _format_trend_summary(trend_rows, reverse=True, limit=2) if trend_rows else ""
+    if not strong:
+        strong = _format_perf_summary(all_perf, limit=3)
+    if not weak:
+        weak = _format_perf_summary(all_perf, reverse=True, limit=2)
+
+    if strong:
+        lines.append(f"강한 축: {strong}")
+    if weak:
+        lines.append(f"약한 축: {weak}")
+    if not strong and not weak:
+        lines.append("아직 요약할 섹터 흐름이 없습니다.")
+
+    return lines
+
+
+def _score_watch_candidate(
+    row: dict,
+    leader: dict,
+    benchmark_lookup: dict[tuple[str, str | None], dict],
+    report_date: str,
+) -> dict:
+    sector_return = row.get("daily_return") or 0.0
+    breadth = row.get("breadth") or 0.0
+    weekly_return = row.get("weekly_return")
+    stock_count = row.get("stock_count") or 0
+    leader_return = leader.get("return")
+
+    benchmark = _get_benchmark_row(benchmark_lookup, row["country"], row["sector"])
+    benchmark_return = benchmark.get("daily_return") if benchmark else None
+    alpha = None
+    if benchmark_return is not None and row.get("daily_return") is not None:
+        alpha = sector_return - benchmark_return
+
+    score = 50.0
+    score += _clamp(sector_return * 7.0, -22.0, 24.0)
+    score += _clamp((breadth - 0.5) * 45.0, -20.0, 20.0)
+    if weekly_return is not None:
+        score += _clamp(weekly_return * 1.5, -12.0, 12.0)
+    if alpha is not None:
+        score += _clamp(alpha * 5.0, -12.0, 12.0)
+    if leader_return is not None:
+        score += _clamp(leader_return * 0.4, -5.0, 8.0)
+
+    cautions = []
+    exclude = False
+    if sector_return <= 0:
+        score -= 18.0
+        exclude = True
+        cautions.append("섹터 약세")
+    if breadth < 0.4:
+        score -= 10.0
+        exclude = True
+        cautions.append("상승 확산 약함")
+    if stock_count and stock_count < 5:
+        score -= 8.0
+        exclude = True
+        cautions.append("표본 적음")
+    if leader_return is not None and leader_return >= 30:
+        score -= 20.0
+        exclude = True
+        cautions.append("대표 종목 과열")
+    elif leader_return is not None and leader_return >= 15:
+        score -= 8.0
+        cautions.append("대표 종목 급등")
+
+    reasons = [
+        f"섹터 {_format_signed_pct(sector_return)}",
+        f"확산 {breadth * 100:.0f}%",
+    ]
+    if alpha is not None:
+        reasons.append(f"벤치 대비 {_format_signed_pct(alpha)}")
+    if weekly_return is not None:
+        reasons.append(f"주간 {_format_signed_pct(weekly_return)}")
+    if leader_return is not None:
+        reasons.append(f"대표 {_format_signed_pct(leader_return, 1)}")
+
+    return {
+        "name": leader.get("name", ""),
+        "country": row["country"],
+        "sector": row["sector"],
+        "score": round(_clamp(score, 0.0, 100.0)),
+        "reasons": reasons,
+        "cautions": cautions,
+        "exclude": exclude,
+        "sector_return": sector_return,
+        "leader_return": leader_return,
+    }
+
+
+def _format_watch_candidate(candidate: dict) -> str:
+    return (
+        f"{_country_label(candidate['country'])} {candidate['name']} "
+        f"관찰점수 {candidate['score']} | "
+        + " · ".join(candidate["reasons"])
+    )
+
+
+def _format_caution_candidate(candidate: dict) -> str:
+    caution_text = ", ".join(candidate["cautions"]) if candidate["cautions"] else "점수 낮음"
+    return (
+        f"{_country_label(candidate['country'])} {candidate['name']} "
+        f"({candidate['sector']}) | {caution_text}"
+    )
+
+
+def _build_watch_sections(
+    all_perf: list[dict],
+    benchmark_lookup: dict[tuple[str, str | None], dict],
+    report_date: str,
+    limit: int = 5,
+) -> tuple[list[str], list[str]]:
+    rows = [row for row in all_perf if row["sector"] != "기타"]
+    scored = []
+    seen = set()
+    for row in rows:
+        gainers = _parse_top_gainers(row.get("top_gainers"))
+        if not gainers:
+            continue
+
+        leader = gainers[0]
+        name = leader.get("name")
+        if not name:
+            continue
+        key = (row["country"], name)
+        if key in seen:
+            continue
+        seen.add(key)
+        scored.append(
+            _score_watch_candidate(row, leader, benchmark_lookup, report_date)
+        )
+
+    scored.sort(
+        key=lambda candidate: (
+            candidate["score"],
+            candidate["sector_return"],
+            candidate["leader_return"] or 0,
+        ),
+        reverse=True,
+    )
+
+    watch_candidates = []
+    caution_candidates = []
+    for candidate in scored:
+        if candidate["exclude"] or candidate["score"] < 55:
+            if candidate["cautions"] and len(caution_candidates) < 3:
+                caution_candidates.append(_format_caution_candidate(candidate))
+            continue
+
+        watch_candidates.append(_format_watch_candidate(candidate))
+        if len(watch_candidates) >= limit:
+            break
+
+    if len(watch_candidates) < limit:
+        for candidate in scored:
+            if len(watch_candidates) >= limit:
+                break
+            if candidate["exclude"] or candidate["score"] < 50:
+                continue
+            line = _format_watch_candidate(candidate)
+            if line not in watch_candidates:
+                watch_candidates.append(line)
+
+    return watch_candidates, caution_candidates
+
+
 def format_daily_report(date: str | None = None) -> list[str]:
     """일간 종합 리포트 생성. 텔레그램 메시지 길이 제한 때문에 분할 반환."""
     conn = get_connection()
     try:
+        requested_date = date is not None
         date = _resolve_report_date(conn, date)
         benchmark_lookup = _build_benchmark_lookup(conn, date)
         messages = []
+        all_perf = get_latest_sector_performance(conn, date=date)
+        by_country: dict[str, list[dict]] = defaultdict(list)
+        for row in all_perf:
+            by_country[row["country"]].append(row)
 
         trend_rows = conn.execute(
             """
@@ -201,15 +507,34 @@ def format_daily_report(date: str | None = None) -> list[str]:
             (date,),
         ).fetchall()
 
+        quality_lines, is_low_quality = _build_data_quality_lines(
+            conn,
+            date,
+            by_country,
+            include_auto_warning=not requested_date,
+        )
+
         header_lines = [
             "📊 글로벌 섹터 데일리 리포트",
             f"기준일 {date}",
             "",
         ]
+        if quality_lines:
+            header_lines.extend(quality_lines)
+            header_lines.append("")
+
+        header_lines.extend(
+            _build_takeaway_lines(
+                trend_rows,
+                all_perf,
+                is_low_quality=is_low_quality,
+            )
+        )
 
         if trend_rows:
-            header_lines.append("🔥 강한 흐름")
-            for i, trend in enumerate(trend_rows[:5], start=1):
+            header_lines.extend(["", "🔥 강한 흐름"])
+            strong_rows = [trend for trend in trend_rows if trend["trend_score"] > 0]
+            for i, trend in enumerate(strong_rows[:5], start=1):
                 total = trend["countries_positive"] + trend["countries_negative"]
                 avg_return = trend["global_avg_return"]
                 header_lines.append(
@@ -220,7 +545,14 @@ def format_daily_report(date: str | None = None) -> list[str]:
                     f" · 상승 {trend['countries_positive']}/{total}개국"
                 )
 
-            weak_rows = [row for row in reversed(trend_rows[-3:]) if row["trend_score"] < 0]
+            if not strong_rows:
+                header_lines.append("뚜렷한 강세 섹터가 없습니다.")
+
+            weak_rows = [
+                row
+                for row in reversed(trend_rows)
+                if row["trend_score"] < 0
+            ][:3]
             if weak_rows:
                 header_lines.extend(["", "🧊 약한 흐름"])
                 for trend in weak_rows:
@@ -234,17 +566,25 @@ def format_daily_report(date: str | None = None) -> list[str]:
                         f" · 하락 {trend['countries_negative']}/{total}개국"
                     )
         else:
-            header_lines.append("트렌드 스코어 데이터가 없습니다.")
+            header_lines.extend(["", "트렌드 점수 없음: 국가별 섹터 등락 기준으로 대체 요약합니다."])
+
+        watch_candidates, caution_candidates = _build_watch_sections(
+            all_perf,
+            benchmark_lookup,
+            date,
+        )
+        if watch_candidates:
+            header_lines.extend(["", "👀 관심 후보"])
+            for candidate in watch_candidates:
+                header_lines.append(f"• {candidate}")
+        if caution_candidates:
+            header_lines.extend(["", "⚠️ 제외/주의 신호"])
+            for candidate in caution_candidates:
+                header_lines.append(f"• {candidate}")
 
         messages.append("\n".join(header_lines).strip())
 
-        all_perf = get_latest_sector_performance(conn, date=date)
-        by_country: dict[str, list[dict]] = defaultdict(list)
-        for row in all_perf:
-            by_country[row["country"]].append(row)
-
-        country_order = ["US", "KR", "CN", "JP", "VN", "IN", "DE"]
-        for code in country_order:
+        for code in COUNTRY_ORDER:
             if code not in by_country:
                 continue
 
