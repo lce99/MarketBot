@@ -12,4 +12,5 @@ venv/
 *.db-wal
 *.db-shm
 data/marketbot_raw.db
+data/watchlist.json
 .claude/

@@ -15,6 +15,7 @@ from src.database import (
     get_latest_sector_dates_by_country,
     get_latest_sector_performance,
 )
+from src.watchlist import WatchItem, load_watchlist
 
 logger = logging.getLogger(__name__)
 
@@ -483,6 +484,127 @@ def _build_watch_sections(
     return watch_candidates, caution_candidates
 
 
+def _find_watch_snapshot(conn, item: WatchItem, report_date: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM instrument_universe
+        WHERE country = ?
+          AND ticker = ?
+          AND last_seen_date <= ?
+        ORDER BY last_seen_date DESC
+        LIMIT 1
+        """,
+        (item.country, item.ticker, report_date),
+    ).fetchone()
+    if row:
+        return dict(row)
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM instrument_universe
+        WHERE country = ?
+          AND ticker = ?
+        ORDER BY last_seen_date DESC
+        LIMIT 1
+        """,
+        (item.country, item.ticker),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _find_sector_row(conn, report_date: str, country: str, sector: str | None) -> dict | None:
+    if not sector:
+        return None
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM sector_performance
+        WHERE date = ? AND country = ? AND sector = ?
+        LIMIT 1
+        """,
+        (report_date, country, sector),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _watch_signal(sector_row: dict | None) -> str:
+    if not sector_row:
+        return "데이터 없음"
+
+    ret = sector_row.get("daily_return") or 0
+    breadth = sector_row.get("breadth") or 0
+    if ret > 0 and breadth >= 0.5:
+        return "우호"
+    if ret < 0 or breadth < 0.4:
+        return "주의"
+    return "중립"
+
+
+def _format_watchlist_line(
+    conn,
+    item: WatchItem,
+    report_date: str,
+    benchmark_lookup: dict[tuple[str, str | None], dict],
+) -> str:
+    snapshot = _find_watch_snapshot(conn, item, report_date)
+    name = item.name or (snapshot or {}).get("name") or item.ticker
+    sector = item.sector or (snapshot or {}).get("sector")
+    sector_row = _find_sector_row(conn, report_date, item.country, sector)
+
+    details = []
+    if sector_row:
+        details.append(f"{sector} {_watch_signal(sector_row)}")
+        details.append(f"섹터 {_format_signed_pct(sector_row.get('daily_return'))}")
+        details.append(f"확산 {(sector_row.get('breadth') or 0) * 100:.0f}%")
+
+        benchmark = _get_benchmark_row(benchmark_lookup, item.country, sector)
+        if benchmark and benchmark.get("daily_return") is not None:
+            alpha = (sector_row.get("daily_return") or 0) - benchmark["daily_return"]
+            details.append(f"벤치 대비 {_format_signed_pct(alpha)}")
+    elif sector:
+        details.append(f"{sector} 데이터 없음")
+    else:
+        details.append("섹터 매칭 없음")
+
+    if snapshot:
+        snapshot_date = snapshot.get("last_seen_date")
+        if snapshot_date and snapshot_date != report_date:
+            details.append(f"스냅샷 {snapshot_date[5:]}")
+        if int(snapshot.get("last_is_abnormal") or 0) == 1:
+            details.append("최근 이상 변동")
+        if int(snapshot.get("last_is_filtered") or 0) == 1:
+            details.append("필터 제외권")
+    else:
+        details.append("종목 스냅샷 없음")
+
+    if item.note:
+        details.append(item.note)
+
+    return (
+        f"{_country_label(item.country)} {name} ({item.ticker}) | "
+        + " · ".join(details)
+    )
+
+
+def _build_watchlist_lines(
+    conn,
+    report_date: str,
+    benchmark_lookup: dict[tuple[str, str | None], dict],
+    limit: int = 8,
+) -> list[str]:
+    items = load_watchlist()
+    if not items:
+        return []
+
+    return [
+        _format_watchlist_line(conn, item, report_date, benchmark_lookup)
+        for item in items[:limit]
+    ]
+
+
 def format_daily_report(date: str | None = None) -> list[str]:
     """일간 종합 리포트 생성. 텔레그램 메시지 길이 제한 때문에 분할 반환."""
     conn = get_connection()
@@ -530,6 +652,12 @@ def format_daily_report(date: str | None = None) -> list[str]:
                 is_low_quality=is_low_quality,
             )
         )
+
+        watchlist_lines = _build_watchlist_lines(conn, date, benchmark_lookup)
+        if watchlist_lines:
+            header_lines.extend(["", "🎯 내 관심 종목"])
+            for line in watchlist_lines:
+                header_lines.append(f"• {line}")
 
         if trend_rows:
             header_lines.extend(["", "🔥 강한 흐름"])
@@ -640,6 +768,29 @@ def format_daily_report(date: str | None = None) -> list[str]:
             messages.append("\n".join(msg_lines).strip())
 
         return messages
+    finally:
+        conn.close()
+
+
+def format_watchlist_report(date: str | None = None) -> str:
+    """Personal watchlist summary for the latest report date."""
+    conn = get_connection()
+    try:
+        date = _resolve_report_date(conn, date)
+        benchmark_lookup = _build_benchmark_lookup(conn, date)
+        lines = _build_watchlist_lines(conn, date, benchmark_lookup)
+        if not lines:
+            return (
+                "🎯 내 관심 종목\n"
+                "설정된 watchlist가 없습니다.\n"
+                "MARKETBOT_WATCHLIST 환경변수 또는 data/watchlist.json에 "
+                "종목을 추가하세요."
+            )
+
+        msg_lines = ["🎯 내 관심 종목", f"기준일 {date}"]
+        for line in lines:
+            msg_lines.append(f"• {line}")
+        return "\n".join(msg_lines)
     finally:
         conn.close()
 

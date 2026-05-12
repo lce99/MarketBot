@@ -15,6 +15,7 @@ from src.reporter import (
     format_country_detail,
     format_daily_report,
     format_sector_detail,
+    format_watchlist_report,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/sector 정보기술 - 특정 섹터 상세\n"
         f"/country 한국 - 특정 국가 상세\n"
         f"/trending - 글로벌 트렌딩 TOP 5\n"
+        f"/watch - 내 관심 종목 흐름\n"
         f"/abnormal - 비정상 급등/급락\n"
         f"/status - 운영 상태\n"
         f"/help - 도움말"
@@ -115,6 +117,12 @@ async def cmd_abnormal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\u2705 오늘 비정상 급등/급락 종목이 없습니다.")
 
 
+async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """개인 watchlist 요약."""
+    msg = format_watchlist_report()
+    await update.message.reply_text(msg)
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """운영 상태 요약."""
     market_codes = []
@@ -135,6 +143,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/sector 정보기술 - 특정 섹터의 국가별 상세\n"
         "/country 한국 - 특정 국가의 섹터별 상세\n"
         "/trending - 글로벌 트렌딩 섹터 TOP 5\n"
+        "/watch - 내 관심 종목 흐름\n"
         "/abnormal - 비정상 급등/급락 종목\n\n"
         "/status - 운영 상태 점검\n\n"
         "자동 리포트: 매일 미국 장 마감 후 발송\n\n"
@@ -167,6 +176,7 @@ def run_bot():
     app.add_handler(CommandHandler("sector", cmd_sector))
     app.add_handler(CommandHandler("country", cmd_country))
     app.add_handler(CommandHandler("trending", cmd_trending))
+    app.add_handler(CommandHandler("watch", cmd_watch))
     app.add_handler(CommandHandler("abnormal", cmd_abnormal))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("help", cmd_help))

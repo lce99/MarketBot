@@ -45,6 +45,7 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 TELEGRAM_ALERT_CHAT_ID=your_alert_chat_id_here
 FINNHUB_API_KEY=your_finnhub_api_key_here
 TUSHARE_TOKEN=your_tushare_token_here
+MARKETBOT_WATCHLIST=
 ```
 
 메모:
@@ -53,6 +54,13 @@ TUSHARE_TOKEN=your_tushare_token_here
 - `TELEGRAM_ALERT_CHAT_ID`를 지정하면 수집 실패 알림을 별도 채팅으로 보낼 수 있습니다.
 - `FINNHUB_API_KEY`는 미국/일본/인도/독일 수집에 필요합니다.
 - `TUSHARE_TOKEN`은 중국 수집에 필요합니다.
+- `MARKETBOT_WATCHLIST`를 JSON으로 지정하면 데일리 리포트와 `/watch`에 내 관심 종목 흐름이 추가됩니다.
+
+watchlist 예시:
+
+```env
+MARKETBOT_WATCHLIST=[{"country":"KR","ticker":"005930","name":"삼성전자"},{"country":"US","ticker":"NVDA","name":"NVIDIA"}]
+```
 
 ### 3. 시장 수집
 
@@ -92,6 +100,7 @@ python -m scripts.report --date 2026-04-20
 ```text
 /status
 /status KR VN
+/watch
 ```
 
 표시 내용:

@@ -1,3 +1,5 @@
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +19,13 @@ class ReportSmokeTests(unittest.TestCase):
         self.raw_db_path = self.data_dir / "marketbot_raw.db"
 
         self.patchers = [
+            patch.dict(
+                os.environ,
+                {
+                    "MARKETBOT_WATCHLIST": "",
+                    "MARKETBOT_WATCHLIST_PATH": str(self.data_dir / "watchlist.json"),
+                },
+            ),
             patch.object(database, "DATA_DIR", self.data_dir),
             patch.object(database, "DB_PATH", self.db_path),
             patch.object(database, "RAW_DB_PATH", self.raw_db_path),
@@ -278,6 +287,46 @@ class ReportSmokeTests(unittest.TestCase):
         self.assertIn("테마바이오", header)
         self.assertIn("상승 확산 약함", header)
         self.assertIn("대표 종목 과열", header)
+
+    def test_daily_report_includes_personal_watchlist_when_configured(self) -> None:
+        conn = database.get_connection()
+        database.upsert_instrument_universe(
+            conn,
+            "US",
+            [
+                {
+                    "date": "2026-04-20",
+                    "ticker": "NVDA",
+                    "name": "NVIDIA",
+                    "country": "US",
+                    "sector": "정보기술",
+                    "market_cap": 2_000_000_000_000,
+                    "close_price": 900.0,
+                    "daily_return": 4.2,
+                    "volume": 1_000_000,
+                    "avg_volume_20d": 800_000,
+                    "is_filtered": 0,
+                    "is_abnormal": 0,
+                }
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        watchlist_json = json.dumps(
+            [{"country": "US", "ticker": "NVDA", "name": "NVIDIA"}],
+            ensure_ascii=False,
+        )
+        with patch.dict(os.environ, {"MARKETBOT_WATCHLIST": watchlist_json}):
+            report_script.prepare_report_data(date="2026-04-20")
+            header = reporter.format_daily_report(date="2026-04-20")[0]
+            watch_report = reporter.format_watchlist_report(date="2026-04-20")
+
+        self.assertIn("내 관심 종목", header)
+        self.assertIn("NVIDIA (NVDA)", header)
+        self.assertIn("정보기술 우호", header)
+        self.assertIn("벤치 대비", header)
+        self.assertIn("NVIDIA (NVDA)", watch_report)
 
     def test_auto_daily_report_marks_stale_latest_data(self) -> None:
         report_script.prepare_report_data()
