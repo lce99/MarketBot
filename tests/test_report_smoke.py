@@ -328,6 +328,59 @@ class ReportSmokeTests(unittest.TestCase):
         self.assertIn("벤치 대비", header)
         self.assertIn("NVIDIA (NVDA)", watch_report)
 
+    def test_watchlist_ignores_future_universe_snapshot_for_past_report(self) -> None:
+        conn = database.get_connection()
+        database.upsert_instrument_universe(
+            conn,
+            "US",
+            [
+                {
+                    "date": "2026-04-21",
+                    "ticker": "FUT",
+                    "name": "Future Corp",
+                    "country": "US",
+                    "sector": "정보기술",
+                    "market_cap": 20_000_000_000,
+                    "close_price": 120.0,
+                    "daily_return": 3.0,
+                    "volume": 1_000_000,
+                    "avg_volume_20d": 900_000,
+                    "is_filtered": 0,
+                    "is_abnormal": 0,
+                }
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        watchlist_json = json.dumps(
+            [{"country": "US", "ticker": "FUT"}],
+            ensure_ascii=False,
+        )
+        with patch.dict(os.environ, {"MARKETBOT_WATCHLIST": watchlist_json}):
+            watch_report = reporter.format_watchlist_report(date="2026-04-20")
+
+        self.assertIn("FUT", watch_report)
+        self.assertIn("종목 스냅샷 없음", watch_report)
+        self.assertNotIn("Future Corp", watch_report)
+
+    def test_trending_report_is_dedicated_command_view(self) -> None:
+        report_script.prepare_report_data(date="2026-04-20")
+
+        msg = reporter.format_trending_report(date="2026-04-20")
+
+        self.assertIn("글로벌 트렌딩 섹터", msg)
+        self.assertIn("강한 흐름", msg)
+        self.assertIn("정보기술", msg)
+        self.assertNotIn("관심 후보", msg)
+
+    def test_abnormal_report_does_not_return_daily_caution_section(self) -> None:
+        msg = reporter.format_abnormal_report(date="2026-04-20")
+
+        self.assertIn("비정상 급등/급락 1종목", msg)
+        self.assertIn("삼성전자", msg)
+        self.assertNotIn("제외/주의 신호", msg)
+
     def test_auto_daily_report_marks_stale_latest_data(self) -> None:
         report_script.prepare_report_data()
         messages = reporter.format_daily_report()

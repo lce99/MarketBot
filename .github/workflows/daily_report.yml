@@ -40,4 +40,5 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MARKETBOT_WATCHLIST: ${{ secrets.MARKETBOT_WATCHLIST }}
         run: python -m scripts.report --skip-analyze

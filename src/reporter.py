@@ -500,18 +500,7 @@ def _find_watch_snapshot(conn, item: WatchItem, report_date: str) -> dict | None
     if row:
         return dict(row)
 
-    row = conn.execute(
-        """
-        SELECT *
-        FROM instrument_universe
-        WHERE country = ?
-          AND ticker = ?
-        ORDER BY last_seen_date DESC
-        LIMIT 1
-        """,
-        (item.country, item.ticker),
-    ).fetchone()
-    return dict(row) if row else None
+    return None
 
 
 def _find_sector_row(conn, report_date: str, country: str, sector: str | None) -> dict | None:
@@ -605,6 +594,88 @@ def _build_watchlist_lines(
     ]
 
 
+def _get_trend_rows(conn, report_date: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT sector, trend_score, countries_positive, countries_negative,
+               global_avg_return, momentum_signal
+        FROM trend_scores
+        WHERE date = ?
+        ORDER BY trend_score DESC
+        """,
+        (report_date,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _build_trend_section_lines(
+    trend_rows: list[dict],
+    *,
+    strong_limit: int = 5,
+    weak_limit: int = 3,
+) -> list[str]:
+    lines: list[str] = []
+    if not trend_rows:
+        lines.append("트렌드 점수 없음: 국가별 섹터 등락 기준으로 대체 요약합니다.")
+        return lines
+
+    lines.append("🔥 강한 흐름")
+    strong_rows = [trend for trend in trend_rows if trend["trend_score"] > 0]
+    for i, trend in enumerate(strong_rows[:strong_limit], start=1):
+        total = trend["countries_positive"] + trend["countries_negative"]
+        avg_return = trend["global_avg_return"]
+        lines.append(f"{i}. {trend['sector']} {_format_signed_number(trend['trend_score'])}")
+        lines.append(
+            f"   평균 {_format_signed_pct(avg_return)}"
+            f" · 상승 {trend['countries_positive']}/{total}개국"
+        )
+
+    if not strong_rows:
+        lines.append("뚜렷한 강세 섹터가 없습니다.")
+
+    weak_rows = [
+        row
+        for row in reversed(trend_rows)
+        if row["trend_score"] < 0
+    ][:weak_limit]
+    if weak_rows:
+        lines.extend(["", "🧊 약한 흐름"])
+        for trend in weak_rows:
+            total = trend["countries_positive"] + trend["countries_negative"]
+            avg_return = trend["global_avg_return"]
+            lines.append(f"• {trend['sector']} {_format_signed_number(trend['trend_score'])}")
+            lines.append(
+                f"  평균 {_format_signed_pct(avg_return)}"
+                f" · 하락 {trend['countries_negative']}/{total}개국"
+            )
+
+    return lines
+
+
+def _format_abnormal_stock_lines(abnormals: list[dict], limit: int = 10) -> list[str]:
+    lines: list[str] = []
+    for abnormal in abnormals[:limit]:
+        info = COUNTRIES.get(abnormal["country"], {})
+        flag = info.get("flag", "")
+        lines.extend(
+            [
+                "",
+                f"• {flag} {abnormal['name']} {_format_signed_pct(abnormal['daily_return'], 1)}",
+            ]
+        )
+        detail_parts = [
+            part
+            for part in (
+                abnormal.get("sector"),
+                _format_market_cap_short(abnormal),
+            )
+            if part
+        ]
+        if detail_parts:
+            lines.append("  " + " · ".join(detail_parts))
+    return lines
+
+
 def format_daily_report(date: str | None = None) -> list[str]:
     """일간 종합 리포트 생성. 텔레그램 메시지 길이 제한 때문에 분할 반환."""
     conn = get_connection()
@@ -618,16 +689,7 @@ def format_daily_report(date: str | None = None) -> list[str]:
         for row in all_perf:
             by_country[row["country"]].append(row)
 
-        trend_rows = conn.execute(
-            """
-            SELECT sector, trend_score, countries_positive, countries_negative,
-                   global_avg_return, momentum_signal
-            FROM trend_scores
-            WHERE date = ?
-            ORDER BY trend_score DESC
-            """,
-            (date,),
-        ).fetchall()
+        trend_rows = _get_trend_rows(conn, date)
 
         quality_lines, is_low_quality = _build_data_quality_lines(
             conn,
@@ -659,42 +721,7 @@ def format_daily_report(date: str | None = None) -> list[str]:
             for line in watchlist_lines:
                 header_lines.append(f"• {line}")
 
-        if trend_rows:
-            header_lines.extend(["", "🔥 강한 흐름"])
-            strong_rows = [trend for trend in trend_rows if trend["trend_score"] > 0]
-            for i, trend in enumerate(strong_rows[:5], start=1):
-                total = trend["countries_positive"] + trend["countries_negative"]
-                avg_return = trend["global_avg_return"]
-                header_lines.append(
-                    f"{i}. {trend['sector']} {_format_signed_number(trend['trend_score'])}"
-                )
-                header_lines.append(
-                    f"   평균 {_format_signed_pct(avg_return)}"
-                    f" · 상승 {trend['countries_positive']}/{total}개국"
-                )
-
-            if not strong_rows:
-                header_lines.append("뚜렷한 강세 섹터가 없습니다.")
-
-            weak_rows = [
-                row
-                for row in reversed(trend_rows)
-                if row["trend_score"] < 0
-            ][:3]
-            if weak_rows:
-                header_lines.extend(["", "🧊 약한 흐름"])
-                for trend in weak_rows:
-                    total = trend["countries_positive"] + trend["countries_negative"]
-                    avg_return = trend["global_avg_return"]
-                    header_lines.append(
-                        f"• {trend['sector']} {_format_signed_number(trend['trend_score'])}"
-                    )
-                    header_lines.append(
-                        f"  평균 {_format_signed_pct(avg_return)}"
-                        f" · 하락 {trend['countries_negative']}/{total}개국"
-                    )
-        else:
-            header_lines.extend(["", "트렌드 점수 없음: 국가별 섹터 등락 기준으로 대체 요약합니다."])
+        header_lines.extend(["", *_build_trend_section_lines(trend_rows)])
 
         watch_candidates, caution_candidates = _build_watch_sections(
             all_perf,
@@ -745,29 +772,43 @@ def format_daily_report(date: str | None = None) -> list[str]:
         abnormals = get_abnormal_stocks(conn, date=date)
         if abnormals:
             msg_lines = [f"⚠️ 비정상 급등/급락 {len(abnormals)}종목"]
-            for abnormal in abnormals[:10]:
-                info = COUNTRIES.get(abnormal["country"], {})
-                flag = info.get("flag", "")
-                msg_lines.extend(
-                    [
-                        "",
-                        f"• {flag} {abnormal['name']} {_format_signed_pct(abnormal['daily_return'], 1)}",
-                    ]
-                )
-                detail_parts = [
-                    part
-                    for part in (
-                        abnormal.get("sector"),
-                        _format_market_cap_short(abnormal),
-                    )
-                    if part
-                ]
-                if detail_parts:
-                    msg_lines.append("  " + " · ".join(detail_parts))
-
+            msg_lines.extend(_format_abnormal_stock_lines(abnormals))
             messages.append("\n".join(msg_lines).strip())
 
         return messages
+    finally:
+        conn.close()
+
+
+def format_trending_report(date: str | None = None) -> str:
+    """Concise global trend summary for the /trending command."""
+    conn = get_connection()
+    try:
+        requested_date = date is not None
+        date = _resolve_report_date(conn, date)
+        all_perf = get_latest_sector_performance(conn, date=date)
+        by_country: dict[str, list[dict]] = defaultdict(list)
+        for row in all_perf:
+            by_country[row["country"]].append(row)
+
+        trend_rows = _get_trend_rows(conn, date)
+        quality_lines, _ = _build_data_quality_lines(
+            conn,
+            date,
+            by_country,
+            include_auto_warning=not requested_date,
+        )
+
+        lines = [
+            "🔥 글로벌 트렌딩 섹터",
+            f"기준일 {date}",
+            "",
+        ]
+        if quality_lines:
+            lines.extend(quality_lines)
+            lines.append("")
+        lines.extend(_build_trend_section_lines(trend_rows))
+        return "\n".join(lines).strip()
     finally:
         conn.close()
 
@@ -791,6 +832,25 @@ def format_watchlist_report(date: str | None = None) -> str:
         for line in lines:
             msg_lines.append(f"• {line}")
         return "\n".join(msg_lines)
+    finally:
+        conn.close()
+
+
+def format_abnormal_report(date: str | None = None) -> str:
+    """Concise abnormal mover summary for the /abnormal command."""
+    conn = get_connection()
+    try:
+        date = _resolve_report_date(conn, date)
+        abnormals = get_abnormal_stocks(conn, date=date)
+        if not abnormals:
+            return f"✅ 비정상 급등/급락 종목 없음\n기준일 {date}"
+
+        lines = [
+            f"⚠️ 비정상 급등/급락 {len(abnormals)}종목",
+            f"기준일 {date}",
+        ]
+        lines.extend(_format_abnormal_stock_lines(abnormals))
+        return "\n".join(lines).strip()
     finally:
         conn.close()
 

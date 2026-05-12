@@ -62,6 +62,8 @@ watchlist 예시:
 MARKETBOT_WATCHLIST=[{"country":"KR","ticker":"005930","name":"삼성전자"},{"country":"US","ticker":"NVDA","name":"NVIDIA"}]
 ```
 
+GitHub Actions에서 자동 리포트에도 관심 종목을 넣으려면 같은 JSON을 repo secret `MARKETBOT_WATCHLIST`로 저장합니다.
+
 ### 3. 시장 수집
 
 ```bash
@@ -145,6 +147,22 @@ python -m scripts.report --date 2026-04-20
   - 텔레그램 전송
 - `smoke_tests.yml`
   - 외부 API 없이 도는 기본 스모크 테스트 실행
+
+운영 secrets:
+
+- `TELEGRAM_BOT_TOKEN`: 자동 리포트 전송과 실패 알림에 필요
+- `TELEGRAM_CHAT_ID`: 자동 리포트 수신 채팅
+- `FINNHUB_API_KEY`: 미국/일본/인도/독일 수집과 벤치마크 수집에 필요
+- `TUSHARE_TOKEN`: 중국 수집에 필요하며, 없으면 CN preflight가 실패합니다.
+- `MARKETBOT_WATCHLIST`: 선택값. 자동 일일 리포트의 `내 관심 종목` 섹션에 사용할 JSON watchlist입니다.
+- `TELEGRAM_ALERT_CHAT_ID`: 선택값. 수집 실패 알림을 별도 채팅으로 받을 때 사용합니다.
+
+예시:
+
+```bash
+gh secret set TUSHARE_TOKEN --repo lce99/MarketBot
+gh secret set MARKETBOT_WATCHLIST --repo lce99/MarketBot
+```
 
 ## 체크포인트
 

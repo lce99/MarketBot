@@ -12,9 +12,11 @@ from telegram.ext import (
 from src.config import COUNTRIES, SECTORS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from src.monitor import format_status_report
 from src.reporter import (
+    format_abnormal_report,
     format_country_detail,
     format_daily_report,
     format_sector_detail,
+    format_trending_report,
     format_watchlist_report,
 )
 
@@ -98,23 +100,14 @@ async def cmd_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """글로벌 트렌딩 섹터 TOP 5."""
-    messages = format_daily_report()
-    if messages:
-        # 첫 번째 메시지에 트렌딩 정보 포함
-        await update.message.reply_text(messages[0])
-    else:
-        await update.message.reply_text("\u274c 데이터가 없습니다.")
+    msg = format_trending_report()
+    await update.message.reply_text(msg)
 
 
 async def cmd_abnormal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """비정상 급등/급락 종목."""
-    messages = format_daily_report()
-    # 마지막 메시지가 비정상 종목
-    for msg in messages:
-        if "\u26a0\ufe0f" in msg:
-            await update.message.reply_text(msg)
-            return
-    await update.message.reply_text("\u2705 오늘 비정상 급등/급락 종목이 없습니다.")
+    msg = format_abnormal_report()
+    await update.message.reply_text(msg)
 
 
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
