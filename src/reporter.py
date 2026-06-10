@@ -5,15 +5,24 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from src.config import COUNTRIES, STATUS_STALE_AFTER_DAYS
+from src.config import (
+    COUNTRIES,
+    LEADLAG_MIN_CORRELATION,
+    LEADLAG_SCOREBOARD_WINDOW_DAYS,
+    STATUS_STALE_AFTER_DAYS,
+)
 from src.database import (
+    _table_exists,
     get_abnormal_stocks,
     get_connection,
+    get_flow_signal_stats,
+    get_flow_signals,
     get_latest_benchmarks,
     get_latest_sector_dates_by_country,
     get_latest_sector_performance,
+    get_lead_lag_scores,
 )
 from src.watchlist import WatchItem, load_watchlist
 
@@ -676,6 +685,175 @@ def _format_abnormal_stock_lines(abnormals: list[dict], limit: int = 10) -> list
     return lines
 
 
+def _format_signal_line(signal: dict, *, with_status: bool = False) -> str:
+    direction = "상승" if signal["predicted_direction"] > 0 else "하락"
+    arrow = "📈" if signal["predicted_direction"] > 0 else "📉"
+    line = (
+        f"{arrow} {signal['sector']}: "
+        f"{_country_label(signal['leader'])} "
+        f"{_format_signed_pct(signal['leader_return'])} → "
+        f"{_country_label(signal['follower'])} {direction} 예상"
+        f" (ρ{_format_signed_number(signal['correlation'], 2)})"
+    )
+    if with_status and signal.get("status") == "verified":
+        mark = "✅ 적중" if signal.get("hit") else "❌ 빗나감"
+        line += (
+            f" → 실제 {_format_signed_pct(signal.get('follower_return'))} {mark}"
+        )
+    return line
+
+
+def _scoreboard_verdict(stats: dict) -> str:
+    total = stats["total"]
+    if total < 10:
+        return f"표본 부족 (검증 {total}건)"
+    rate = stats["hit_rate"] or 0
+    if rate >= 0.6:
+        verdict = "가설 지지"
+    elif rate >= 0.525:
+        verdict = "약한 지지"
+    else:
+        verdict = "지지 안 됨"
+    return f"{verdict} · 적중률 {rate * 100:.0f}% ({stats['hits']}/{total})"
+
+
+def _build_flow_scoreboard_lines(conn) -> list[str]:
+    window_start = (
+        datetime.utcnow() - timedelta(days=LEADLAG_SCOREBOARD_WINDOW_DAYS)
+    ).strftime("%Y-%m-%d")
+    recent = get_flow_signal_stats(conn, since_date=window_start)
+    all_time = get_flow_signal_stats(conn)
+
+    lines = [f"가설 검증 (최근 {LEADLAG_SCOREBOARD_WINDOW_DAYS}일): {_scoreboard_verdict(recent)}"]
+    if all_time["total"] > recent["total"]:
+        lines.append(f"누적: {_scoreboard_verdict(all_time)}")
+    if recent["up_total"] or recent["down_total"]:
+        parts = []
+        if recent["up_total"]:
+            parts.append(
+                f"상승 예측 {recent['up_hits']}/{recent['up_total']}"
+            )
+        if recent["down_total"]:
+            parts.append(
+                f"하락 예측 {recent['down_hits']}/{recent['down_total']}"
+            )
+        lines.append(" · ".join(parts))
+    return lines
+
+
+def _build_leader_ranking_lines(pair_rows: list[dict], limit: int = 4) -> list[str]:
+    """강한 페어 기준으로 어느 나라가 주로 선행하는지 순위를 만든다."""
+    strong = [
+        row
+        for row in pair_rows
+        if row["correlation"] is not None
+        and row["correlation"] >= LEADLAG_MIN_CORRELATION
+    ]
+    if not strong:
+        return []
+
+    counts: dict[str, int] = {}
+    for row in strong:
+        counts[row["leader"]] = counts.get(row["leader"], 0) + 1
+        counts[row["follower"]] = counts.get(row["follower"], 0)
+
+    ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    lines = ["🏁 선행국 순위 (강한 페어에서 선행한 횟수)"]
+    for country, count in ranked[:limit]:
+        lines.append(f"• {_country_label(country)}: {count}회")
+    return lines
+
+
+def _build_flow_section_lines(conn, date: str) -> list[str]:
+    """일간 리포트에 붙는 압축된 자금 흐름 섹션."""
+    if not _table_exists(conn, "flow_signals"):
+        return []
+
+    lines: list[str] = []
+    signals = get_flow_signals(conn, status="pending", created_date=date, limit=3)
+    if signals:
+        lines.append("🌊 자금 흐름 시그널 (다음 거래일)")
+        for signal in signals:
+            lines.append(f"• {_format_signal_line(signal)}")
+
+    scoreboard = _build_flow_scoreboard_lines(conn)
+    stats_total = get_flow_signal_stats(conn)["total"]
+    if signals or stats_total:
+        if not signals:
+            lines.append("🌊 자금 흐름 시그널: 오늘은 임계값을 넘는 선행 신호 없음")
+        lines.append(scoreboard[0])
+        lines.append("자세히: /flow")
+    return lines
+
+
+def format_flow_report(date: str | None = None) -> str:
+    """글로벌 자금 흐름 lead-lag 리포트 (/flow 명령)."""
+    conn = get_connection()
+    try:
+        if not _table_exists(conn, "lead_lag_scores"):
+            return "🌊 자금 흐름 데이터가 아직 없습니다. 다음 리포트 사이클 이후 다시 시도하세요."
+
+        date = _resolve_report_date(conn, date)
+        pair_rows = get_lead_lag_scores(conn, date=date)
+
+        lines = [
+            "🌊 글로벌 자금 흐름 (lead-lag)",
+            f"기준일 {date}",
+            "",
+        ]
+        lines.extend(_build_flow_scoreboard_lines(conn))
+
+        if not pair_rows:
+            lines.extend(["", "아직 계산된 lead-lag 페어가 없습니다."])
+            return "\n".join(lines).strip()
+
+        ranking = _build_leader_ranking_lines(pair_rows)
+        if ranking:
+            lines.extend(["", *ranking])
+
+        strong_pairs = [
+            row
+            for row in pair_rows
+            if row["correlation"] is not None
+            and row["correlation"] >= LEADLAG_MIN_CORRELATION
+        ][:7]
+        if strong_pairs:
+            lines.extend(["", "🔗 강한 선행 관계"])
+            for row in strong_pairs:
+                lag_label = "당일" if row["lag"] == 0 else f"+{row['lag']}일"
+                agreement = row.get("direction_agreement")
+                agreement_text = (
+                    f" · 방향 일치 {agreement * 100:.0f}%" if agreement is not None else ""
+                )
+                lines.append(
+                    f"• {row['sector']}: {_country_label(row['leader'])} → "
+                    f"{_country_label(row['follower'])} {lag_label}"
+                    f" ρ{_format_signed_number(row['correlation'], 2)}"
+                    f"{agreement_text} (n={row['n_obs']})"
+                )
+
+        pending = get_flow_signals(conn, status="pending", created_date=date, limit=5)
+        if pending:
+            lines.extend(["", "📌 다음 거래일 주목 흐름"])
+            for signal in pending:
+                lines.append(f"• {_format_signal_line(signal)}")
+
+        recent_verified = [
+            signal
+            for signal in get_flow_signals(conn, status="verified", limit=5)
+        ]
+        if recent_verified:
+            lines.extend(["", "🧾 최근 검증 결과"])
+            for signal in recent_verified:
+                lines.append(
+                    f"• {_format_signal_line(signal, with_status=True)}"
+                )
+
+        return "\n".join(lines).strip()
+    finally:
+        conn.close()
+
+
 def format_daily_report(date: str | None = None) -> list[str]:
     """일간 종합 리포트 생성. 텔레그램 메시지 길이 제한 때문에 분할 반환."""
     conn = get_connection()
@@ -714,6 +892,10 @@ def format_daily_report(date: str | None = None) -> list[str]:
                 is_low_quality=is_low_quality,
             )
         )
+
+        flow_lines = _build_flow_section_lines(conn, date)
+        if flow_lines:
+            header_lines.extend(["", *flow_lines])
 
         watchlist_lines = _build_watchlist_lines(conn, date, benchmark_lookup)
         if watchlist_lines:

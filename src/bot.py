@@ -15,6 +15,7 @@ from src.reporter import (
     format_abnormal_report,
     format_country_detail,
     format_daily_report,
+    format_flow_report,
     format_sector_detail,
     format_trending_report,
     format_watchlist_report,
@@ -48,6 +49,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/sector 정보기술 - 특정 섹터 상세\n"
         f"/country 한국 - 특정 국가 상세\n"
         f"/trending - 글로벌 트렌딩 TOP 5\n"
+        f"/flow - 글로벌 자금 흐름 (lead-lag)\n"
         f"/watch - 내 관심 종목 흐름\n"
         f"/abnormal - 비정상 급등/급락\n"
         f"/status - 운영 상태\n"
@@ -104,6 +106,12 @@ async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def cmd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """글로벌 자금 흐름 lead-lag 리포트."""
+    msg = format_flow_report()
+    await update.message.reply_text(msg)
+
+
 async def cmd_abnormal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """비정상 급등/급락 종목."""
     msg = format_abnormal_report()
@@ -136,6 +144,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/sector 정보기술 - 특정 섹터의 국가별 상세\n"
         "/country 한국 - 특정 국가의 섹터별 상세\n"
         "/trending - 글로벌 트렌딩 섹터 TOP 5\n"
+        "/flow - 글로벌 자금 흐름: 선행국→후행국 lead-lag와 가설 적중률\n"
         "/watch - 내 관심 종목 흐름\n"
         "/abnormal - 비정상 급등/급락 종목\n\n"
         "/status - 운영 상태 점검\n\n"
@@ -169,6 +178,7 @@ def run_bot():
     app.add_handler(CommandHandler("sector", cmd_sector))
     app.add_handler(CommandHandler("country", cmd_country))
     app.add_handler(CommandHandler("trending", cmd_trending))
+    app.add_handler(CommandHandler("flow", cmd_flow))
     app.add_handler(CommandHandler("watch", cmd_watch))
     app.add_handler(CommandHandler("abnormal", cmd_abnormal))
     app.add_handler(CommandHandler("status", cmd_status))

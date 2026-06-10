@@ -26,8 +26,11 @@ logger = logging.getLogger(__name__)
 def prepare_report_data(date: str | None = None) -> None:
     """리포트용 파생 데이터를 계산해 DB에 저장한다."""
     from src.analyzer import compute_trend_scores
+    from src.leadlag import update_lead_lag
 
     compute_trend_scores(date=date)
+    leadlag_summary = update_lead_lag(date=date)
+    logger.info(f"lead-lag 갱신: {leadlag_summary}")
     logger.info("리포트용 파생 데이터 준비 완료")
 
 

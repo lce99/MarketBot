@@ -2,6 +2,13 @@
 
 주요 글로벌 시장의 섹터 데이터를 수집하고, 요약 DB를 Git으로 관리하면서 텔레그램으로 일간 리포트를 보내는 Python 봇입니다.
 
+핵심 질문은 "돈이 어디로, 왜 흐르는가"입니다. "빠른 나라가 먼저 움직이고 느린
+나라가 같은 섹터를 따라간다"는 가설을 매일 자동으로 검증합니다.
+
+- 섹터별 국가 페어의 시차 상관(lead-lag)을 계산해 선행국→후행국 관계를 점수화
+- 선행국이 크게 움직이면 후행국의 다음 거래일 방향을 예측하는 시그널 생성
+- 다음 날 실제 데이터로 예측을 채점해 가설 적중률을 누적 (`/flow`로 확인)
+
 지원 시장:
 
 - `US` 미국
@@ -16,6 +23,7 @@
 
 - `src/collectors/`: 국가별 수집기
 - `src/analyzer.py`: 글로벌 트렌드 스코어 계산
+- `src/leadlag.py`: 자금 흐름 lead-lag 분석과 가설 검증 (선행국→후행국)
 - `src/reporter.py`: 텔레그램 리포트 포맷팅
 - `src/bot.py`: 텔레그램 봇 명령과 자동 전송
 - `src/monitor.py`: `/status` 상태 요약과 관리자 실패 알림
@@ -103,6 +111,7 @@ python -m scripts.report --date 2026-04-20
 /status
 /status KR VN
 /watch
+/flow
 ```
 
 표시 내용:
@@ -118,7 +127,7 @@ python -m scripts.report --date 2026-04-20
 
 - `data/marketbot.db`
   - Git에 커밋되는 summary DB
-  - 포함 테이블: `sector_performance`, `abnormal_stock_summary`, `benchmark_daily`, `trend_scores`, `collection_log`
+  - 포함 테이블: `sector_performance`, `abnormal_stock_summary`, `benchmark_daily`, `trend_scores`, `lead_lag_scores`, `flow_signals`, `collection_log`
 - `data/marketbot_raw.db`
   - Git에는 올리지 않는 raw DB
   - 포함 테이블: `stock_daily`
