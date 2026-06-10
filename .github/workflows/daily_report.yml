@@ -6,6 +6,12 @@ on:
     - cron: '0 22 * * 1-5'
   workflow_dispatch:
 
+# data/marketbot.db를 커밋하는 워크플로끼리 동시 실행되면 rebase 충돌로
+# 수집 데이터가 유실되므로 같은 그룹으로 직렬화한다.
+concurrency:
+  group: marketbot-db-commit
+  cancel-in-progress: false
+
 jobs:
   report:
     runs-on: ubuntu-latest

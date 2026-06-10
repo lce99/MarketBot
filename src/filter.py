@@ -24,9 +24,12 @@ def apply_filters(df: pd.DataFrame, country: str) -> pd.DataFrame:
     df["is_abnormal"] = 0
 
     # 1) 시가총액 필터
+    # 시총 정보가 없는 종목(예: vnstock listing)은 모르는 값으로 두고 제외하지 않는다.
+    # 전부 제외하면 해당 시장의 섹터 집계가 영구적으로 비어 버린다.
     min_cap = FILTER_MARKET_CAP_MIN.get(country, 0)
     if min_cap > 0 and "market_cap" in df.columns:
-        mask = df["market_cap"].fillna(0) < min_cap
+        market_cap = pd.to_numeric(df["market_cap"], errors="coerce")
+        mask = market_cap.notna() & (market_cap < min_cap)
         df.loc[mask, "is_filtered"] = 1
 
     # 2) 거래량 필터 (하위 N% 제외, 필터링 안 된 종목 기준)
