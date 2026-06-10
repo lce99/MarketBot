@@ -273,3 +273,13 @@ KR_SECTOR_MAP = {
 TREND_WEIGHT_RETURN = 0.4      # 평균 수익률
 TREND_WEIGHT_BREADTH = 0.3     # 국가 확산도
 TREND_WEIGHT_MOMENTUM = 0.3    # 주간 모멘텀
+
+# ── 글로벌 자금 흐름(lead-lag) 분석 ──
+# "빠른 나라가 먼저 움직이고 느린 나라가 섹터를 따라간다" 가설 검증용.
+LEADLAG_LOOKBACK_DAYS = 120        # 상관 계산에 쓰는 과거 캘린더 일수
+LEADLAG_MAX_LAG = 2                # 최대 시차 (거래일)
+LEADLAG_MIN_OVERLAP = 15           # 페어당 최소 공통 거래일 수
+LEADLAG_MIN_CORRELATION = 0.35     # 시그널 생성에 쓰는 최소 상관계수
+LEADLAG_SIGNAL_MIN_LEADER_MOVE = 1.0   # 선행국 섹터 등락 임계값 (%)
+LEADLAG_SIGNAL_EXPIRE_AFTER_DAYS = 7   # 후행국 데이터가 안 오면 만료
+LEADLAG_SCOREBOARD_WINDOW_DAYS = 30    # 가설 스코어보드 집계 구간

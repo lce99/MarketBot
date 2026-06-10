@@ -139,6 +139,36 @@ def init_db() -> None:
             UNIQUE(country, ticker)
         );
 
+        CREATE TABLE IF NOT EXISTS lead_lag_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            sector TEXT NOT NULL,
+            leader TEXT NOT NULL,
+            follower TEXT NOT NULL,
+            lag INTEGER NOT NULL,
+            correlation REAL,
+            direction_agreement REAL,
+            n_obs INTEGER,
+            UNIQUE(date, sector, leader, follower)
+        );
+
+        CREATE TABLE IF NOT EXISTS flow_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_date TEXT NOT NULL,
+            sector TEXT NOT NULL,
+            leader TEXT NOT NULL,
+            follower TEXT NOT NULL,
+            lag INTEGER NOT NULL,
+            leader_return REAL,
+            predicted_direction INTEGER NOT NULL,
+            correlation REAL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            target_date TEXT,
+            follower_return REAL,
+            hit INTEGER,
+            UNIQUE(created_date, sector, leader, follower)
+        );
+
         CREATE TABLE IF NOT EXISTS instrument_metadata (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             country TEXT NOT NULL,
@@ -171,6 +201,10 @@ def init_db() -> None:
             ON instrument_universe(country, last_seen_date);
         CREATE INDEX IF NOT EXISTS idx_metadata_country
             ON instrument_metadata(country, last_refreshed_at);
+        CREATE INDEX IF NOT EXISTS idx_lead_lag_date
+            ON lead_lag_scores(date);
+        CREATE INDEX IF NOT EXISTS idx_flow_signals_status
+            ON flow_signals(status, created_date);
         """
     )
     _ensure_column(conn, "collection_log", "failure_code", "TEXT")
@@ -743,6 +777,164 @@ def upsert_trend_scores(conn: sqlite3.Connection, rows: list[dict]) -> None:
         """,
         rows,
     )
+
+
+def upsert_lead_lag_scores(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    """Bulk-upsert lead-lag pair scores into the summary DB."""
+    if not rows:
+        return
+
+    conn.executemany(
+        """
+        INSERT INTO lead_lag_scores (
+            date, sector, leader, follower, lag,
+            correlation, direction_agreement, n_obs
+        )
+        VALUES (
+            :date, :sector, :leader, :follower, :lag,
+            :correlation, :direction_agreement, :n_obs
+        )
+        ON CONFLICT(date, sector, leader, follower) DO UPDATE SET
+            lag = excluded.lag,
+            correlation = excluded.correlation,
+            direction_agreement = excluded.direction_agreement,
+            n_obs = excluded.n_obs
+        """,
+        rows,
+    )
+
+
+def get_lead_lag_scores(
+    conn: sqlite3.Connection,
+    date: Optional[str] = None,
+) -> list[dict]:
+    """Read the latest lead-lag pair scores up to the requested date."""
+    if date is None:
+        row = conn.execute("SELECT MAX(date) FROM lead_lag_scores").fetchone()
+        date = row[0] if row and row[0] else None
+        if date is None:
+            return []
+    else:
+        row = conn.execute(
+            "SELECT MAX(date) FROM lead_lag_scores WHERE date <= ?",
+            (date,),
+        ).fetchone()
+        date = row[0] if row and row[0] else None
+        if date is None:
+            return []
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM lead_lag_scores
+        WHERE date = ?
+        ORDER BY correlation DESC
+        """,
+        (date,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_flow_signals(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    """Bulk-upsert pending flow signals (idempotent across reruns)."""
+    if not rows:
+        return
+
+    conn.executemany(
+        """
+        INSERT INTO flow_signals (
+            created_date, sector, leader, follower, lag,
+            leader_return, predicted_direction, correlation, status
+        )
+        VALUES (
+            :created_date, :sector, :leader, :follower, :lag,
+            :leader_return, :predicted_direction, :correlation, 'pending'
+        )
+        ON CONFLICT(created_date, sector, leader, follower) DO UPDATE SET
+            lag = excluded.lag,
+            leader_return = excluded.leader_return,
+            predicted_direction = excluded.predicted_direction,
+            correlation = excluded.correlation
+        """,
+        rows,
+    )
+
+
+def get_flow_signals(
+    conn: sqlite3.Connection,
+    status: Optional[str] = None,
+    created_date: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> list[dict]:
+    """Read flow signals, optionally filtered by status and creation date."""
+    query = "SELECT * FROM flow_signals WHERE 1=1"
+    params: list[object] = []
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    if created_date:
+        query += " AND created_date = ?"
+        params.append(created_date)
+    query += " ORDER BY created_date DESC, ABS(COALESCE(correlation, 0)) DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def resolve_flow_signal(
+    conn: sqlite3.Connection,
+    signal_id: int,
+    *,
+    status: str,
+    target_date: Optional[str] = None,
+    follower_return: Optional[float] = None,
+    hit: Optional[int] = None,
+) -> None:
+    """Mark one flow signal as verified or expired."""
+    conn.execute(
+        """
+        UPDATE flow_signals
+        SET status = ?, target_date = ?, follower_return = ?, hit = ?
+        WHERE id = ?
+        """,
+        (status, target_date, follower_return, hit, signal_id),
+    )
+
+
+def get_flow_signal_stats(
+    conn: sqlite3.Connection,
+    since_date: Optional[str] = None,
+) -> dict:
+    """Aggregate verified flow signal outcomes for the hypothesis scoreboard."""
+    query = """
+        SELECT
+            COUNT(*) AS total,
+            SUM(hit) AS hits,
+            SUM(CASE WHEN predicted_direction > 0 THEN 1 ELSE 0 END) AS up_total,
+            SUM(CASE WHEN predicted_direction > 0 THEN hit ELSE 0 END) AS up_hits,
+            SUM(CASE WHEN predicted_direction < 0 THEN 1 ELSE 0 END) AS down_total,
+            SUM(CASE WHEN predicted_direction < 0 THEN hit ELSE 0 END) AS down_hits
+        FROM flow_signals
+        WHERE status = 'verified'
+    """
+    params: list[object] = []
+    if since_date:
+        query += " AND created_date >= ?"
+        params.append(since_date)
+
+    row = conn.execute(query, params).fetchone()
+    total = row["total"] or 0
+    return {
+        "total": total,
+        "hits": row["hits"] or 0,
+        "hit_rate": (row["hits"] or 0) / total if total else None,
+        "up_total": row["up_total"] or 0,
+        "up_hits": row["up_hits"] or 0,
+        "down_total": row["down_total"] or 0,
+        "down_hits": row["down_hits"] or 0,
+    }
 
 
 def log_collection(
