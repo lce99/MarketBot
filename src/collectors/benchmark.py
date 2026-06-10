@@ -4,6 +4,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 
+import pandas as pd
 import yfinance as yf
 
 from src.config import BENCHMARK_TICKERS
@@ -30,6 +31,7 @@ def _download_with_retries(
                 auto_adjust=True,
                 progress=False,
                 threads=False,
+                group_by="ticker",
             )
             if not data.empty:
                 return data
@@ -47,6 +49,22 @@ def _download_with_retries(
     if last_error is None:
         raise RuntimeError("벤치마크 다운로드 실패")
     raise last_error
+
+
+def _extract_ticker_frame(data: pd.DataFrame, ticker: str) -> pd.DataFrame | None:
+    """멀티티커 다운로드 결과에서 단일 티커 프레임을 추출.
+
+    yfinance는 버전/옵션에 따라 컬럼 레벨 0이 티커일 수도, 가격 필드(Close 등)일
+    수도 있어 두 방향 모두 지원한다.
+    """
+    if not isinstance(data.columns, pd.MultiIndex):
+        return data
+
+    if ticker in data.columns.get_level_values(0):
+        return data[ticker]
+    if ticker in data.columns.get_level_values(-1):
+        return data.xs(ticker, axis=1, level=-1)
+    return None
 
 
 def collect_benchmarks(date: str | None = None) -> int:
@@ -85,24 +103,20 @@ def collect_benchmarks(date: str | None = None) -> int:
     for key, info in BENCHMARK_TICKERS.items():
         ticker = info["ticker"]
         try:
-            # 멀티티커일 때 컬럼 접근
-            if len(BENCHMARK_TICKERS) == 1:
-                ticker_data = data
-            else:
-                if ticker not in data.columns.get_level_values(0):
-                    continue
-                ticker_data = data[ticker]
+            ticker_data = _extract_ticker_frame(data, ticker)
+            if ticker_data is None or ticker_data.empty:
+                continue
 
-            if ticker_data.empty:
+            valid_data = ticker_data.dropna(subset=["Close"])
+            if valid_data.empty:
                 continue
 
             # 최신 데이터
-            latest = ticker_data.dropna(subset=["Close"]).iloc[-1]
+            latest = valid_data.iloc[-1]
             close_price = float(latest["Close"])
 
             # 일간 수익률
             daily_return = None
-            valid_data = ticker_data.dropna(subset=["Close"])
             if len(valid_data) >= 2:
                 prev = float(valid_data.iloc[-2]["Close"])
                 if prev > 0:
@@ -122,8 +136,8 @@ def collect_benchmarks(date: str | None = None) -> int:
                 "country": info["country"],
                 "sector": info.get("sector"),
                 "close_price": round(close_price, 2),
-                "daily_return": round(daily_return, 4) if daily_return else None,
-                "weekly_return": round(weekly_return, 4) if weekly_return else None,
+                "daily_return": round(daily_return, 4) if daily_return is not None else None,
+                "weekly_return": round(weekly_return, 4) if weekly_return is not None else None,
             })
         except Exception as e:
             logger.debug(f"벤치마크 {ticker} 실패: {e}")

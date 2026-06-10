@@ -23,6 +23,12 @@ on:
         required: true
         default: 'KR'
 
+# data/marketbot.db를 커밋하는 워크플로끼리 동시 실행되면 rebase 충돌로
+# 수집 데이터가 유실되므로 같은 그룹으로 직렬화한다.
+concurrency:
+  group: marketbot-db-commit
+  cancel-in-progress: false
+
 jobs:
   collect:
     runs-on: ubuntu-latest

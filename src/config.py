@@ -20,7 +20,8 @@ except ImportError:
 # ── API 키 (환경변수) ──
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-TELEGRAM_ALERT_CHAT_ID = os.getenv("TELEGRAM_ALERT_CHAT_ID", TELEGRAM_CHAT_ID)
+# GitHub Actions는 미설정 secret을 빈 문자열로 주입하므로 빈 값도 fallback 처리한다.
+TELEGRAM_ALERT_CHAT_ID = os.getenv("TELEGRAM_ALERT_CHAT_ID") or TELEGRAM_CHAT_ID
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
 STATUS_STALE_AFTER_DAYS = int(os.getenv("STATUS_STALE_AFTER_DAYS", "4"))
@@ -172,7 +173,7 @@ BENCHMARK_TICKERS = {
     "US_UTIL": {"ticker": "XLU", "country": "US", "sector": "유틸리티"},
     # 인도 Nifty 섹터 인덱스
     "IN_IT": {"ticker": "^CNXIT", "country": "IN", "sector": "정보기술"},
-    "IN_BANK": {"ticker": "^CNXBANK", "country": "IN", "sector": "금융"},
+    "IN_BANK": {"ticker": "^NSEBANK", "country": "IN", "sector": "금융"},
     "IN_PHARMA": {"ticker": "^CNXPHARMA", "country": "IN", "sector": "헬스케어"},
     "IN_AUTO": {"ticker": "^CNXAUTO", "country": "IN", "sector": "산업재"},
     "IN_METAL": {"ticker": "^CNXMETAL", "country": "IN", "sector": "소재"},
