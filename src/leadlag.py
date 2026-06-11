@@ -265,15 +265,21 @@ def verify_flow_signals() -> dict:
         pending = get_flow_signals(conn, status="pending")
         today = datetime.utcnow().date()
         for signal in pending:
+            target_offset = max(int(signal.get("lag") or 1) - 1, 0)
             outcome = conn.execute(
                 """
                 SELECT date, daily_return
                 FROM sector_performance
                 WHERE country = ? AND sector = ? AND date > ?
                 ORDER BY date ASC
-                LIMIT 1
+                LIMIT 1 OFFSET ?
                 """,
-                (signal["follower"], signal["sector"], signal["created_date"]),
+                (
+                    signal["follower"],
+                    signal["sector"],
+                    signal["created_date"],
+                    target_offset,
+                ),
             ).fetchone()
 
             if outcome is not None and outcome["daily_return"] is not None:

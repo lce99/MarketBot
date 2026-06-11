@@ -11,6 +11,7 @@ from src.database import (
     get_flow_signal_stats,
     get_flow_signals,
     init_db,
+    upsert_flow_signals,
 )
 
 
@@ -180,6 +181,48 @@ class FlowSignalTests(LeadLagTestBase):
             ]
             self.assertEqual(len(us_kr), 1)
             self.assertEqual(us_kr[0]["hit"], 0)
+        finally:
+            conn.close()
+
+    def test_lag_two_signal_waits_for_second_follower_observation(self) -> None:
+        created_date = _recent_weekdays(1)[0]
+        first_target, second_target = _weekdays(created_date, 3)[1:]
+
+        conn = get_connection()
+        try:
+            upsert_flow_signals(
+                conn,
+                [
+                    {
+                        "created_date": created_date,
+                        "sector": "정보기술",
+                        "leader": "US",
+                        "follower": "KR",
+                        "lag": 2,
+                        "leader_return": 2.0,
+                        "predicted_direction": 1,
+                        "correlation": 0.8,
+                    }
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.insert_sector_returns([(first_target, "KR", "정보기술", -1.0)])
+        outcome = leadlag.verify_flow_signals()
+        self.assertEqual(outcome["verified"], 0)
+
+        self.insert_sector_returns([(second_target, "KR", "정보기술", 1.2)])
+        outcome = leadlag.verify_flow_signals()
+        self.assertEqual(outcome["verified"], 1)
+
+        conn = get_connection()
+        try:
+            verified = get_flow_signals(conn, status="verified")
+            self.assertEqual(len(verified), 1)
+            self.assertEqual(verified[0]["target_date"], second_target)
+            self.assertEqual(verified[0]["hit"], 1)
         finally:
             conn.close()
 
