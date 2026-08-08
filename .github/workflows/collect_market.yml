@@ -22,6 +22,29 @@ on:
         description: '시장 코드 (KR, US, CN, JP, VN, IN, DE, ALL)'
         required: true
         default: 'KR'
+      date:
+        description: '수집 기준일 (YYYY-MM-DD, 비우면 UTC 오늘)'
+        required: false
+        default: ''
+      mode:
+        description: 'VN 수집 모드'
+        required: true
+        type: choice
+        default: 'auto'
+        options:
+          - auto
+          - full
+          - incremental
+          - seed
+      max_tickers:
+        description: 'VN 1회 최대 종목 수 (비우면 기본값)'
+        required: false
+        default: ''
+      resume_from_checkpoint:
+        description: 'VN 저장 checkpoint에서 재개'
+        required: true
+        type: boolean
+        default: false
 
 # data/marketbot.db를 커밋하는 워크플로끼리 동시 실행되면 rebase 충돌로
 # 수집 데이터가 유실되므로 같은 그룹으로 직렬화한다.
@@ -68,28 +91,58 @@ jobs:
           echo "market=${market^^}" >> $GITHUB_OUTPUT
 
       - name: Run collection preflight
+        id: preflight
+        continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
-        run: python -m scripts.collect --market ${{ steps.market.outputs.market }} --preflight-only
+          COLLECTION_DATE: ${{ github.event.inputs.date }}
+        run: |
+          args=(--market "${{ steps.market.outputs.market }}" --preflight-only)
+          if [ -n "$COLLECTION_DATE" ]; then
+            args+=(--date "$COLLECTION_DATE")
+          fi
+          python -m scripts.collect "${args[@]}"
 
       - name: Collect market data
+        id: collection
+        if: steps.preflight.outcome == 'success'
+        continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
-        run: python -m scripts.collect --market ${{ steps.market.outputs.market }}
+          COLLECTION_DATE: ${{ github.event.inputs.date }}
+          COLLECTION_MODE: ${{ github.event.inputs.mode }}
+          COLLECTION_MAX_TICKERS: ${{ github.event.inputs.max_tickers }}
+          COLLECTION_RESUME: ${{ github.event.inputs.resume_from_checkpoint }}
+        run: |
+          args=(--market "${{ steps.market.outputs.market }}")
+          if [ -n "$COLLECTION_DATE" ]; then
+            args+=(--date "$COLLECTION_DATE")
+          fi
+          if [ -n "$COLLECTION_MODE" ] && [ "$COLLECTION_MODE" != "auto" ]; then
+            args+=(--mode "$COLLECTION_MODE")
+          fi
+          if [ -n "$COLLECTION_MAX_TICKERS" ]; then
+            args+=(--max-tickers "$COLLECTION_MAX_TICKERS")
+          fi
+          if [ "$COLLECTION_RESUME" = "true" ]; then
+            args+=(--resume-from-checkpoint)
+          fi
+          python -m scripts.collect "${args[@]}"
 
       - name: Checkpoint database
+        if: always()
         run: python -m scripts.checkpoint_db
 
       - name: Upload raw database artifact
-        if: steps.market.outputs.market != 'BENCHMARK'
+        if: steps.collection.outcome == 'success' && steps.market.outputs.market != 'BENCHMARK'
         uses: actions/upload-artifact@v4
         with:
           name: marketbot-raw-db-${{ github.run_id }}-${{ steps.market.outputs.market }}
@@ -98,6 +151,7 @@ jobs:
           retention-days: 14
 
       - name: Commit summary database
+        if: always()
         run: |
           git config user.name "MarketBot"
           git config user.email "marketbot@github.com"
@@ -108,7 +162,7 @@ jobs:
 
       - name: Collect benchmarks
         id: benchmark
-        if: steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL'
+        if: steps.collection.outcome == 'success' && (steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL')
         continue-on-error: true
         run: python -m scripts.collect --market BENCHMARK
 
@@ -129,3 +183,9 @@ jobs:
       - name: Note benchmark failure
         if: steps.benchmark.outcome == 'failure'
         run: echo "Benchmark collection failed after primary market data commit."
+
+      - name: Preserve collection failure status
+        if: always() && (steps.preflight.outcome == 'failure' || steps.collection.outcome == 'failure')
+        run: |
+          echo "Collection failed; diagnostics and checkpoints were committed above." >&2
+          exit 1
