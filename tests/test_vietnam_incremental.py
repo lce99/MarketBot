@@ -9,7 +9,7 @@ import pandas as pd
 import src.collectors.vietnam as vietnam_module
 import src.database as database
 from src.collection_failures import CollectionFailure
-from src.collectors.vietnam import VietnamCollector
+from src.collectors.vietnam import VietnamCollector, map_vietnam_sector
 
 
 class VietnamIncrementalTests(unittest.TestCase):
@@ -67,6 +67,64 @@ class VietnamIncrementalTests(unittest.TestCase):
             )
         finally:
             conn.close()
+
+    def test_maps_vnstock_english_and_vietnamese_industries(self) -> None:
+        self.assertEqual(map_vietnam_sector("Banks"), "금융")
+        self.assertEqual(map_vietnam_sector("Ngân hàng"), "금융")
+        self.assertEqual(map_vietnam_sector("Công nghệ và thông tin"), "정보기술")
+        self.assertEqual(map_vietnam_sector("Industrials"), "산업재")
+
+    def test_normalizes_vci_icb_name_column(self) -> None:
+        collector = VietnamCollector()
+        listing = collector._normalize_listing_frame(
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": "VCB",
+                        "organ_name": "Vietcombank",
+                        "icb_name": "Tài chính",
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual(listing.iloc[0]["industry"], "Tài chính")
+        self.assertEqual(map_vietnam_sector(listing.iloc[0]["industry"]), "금융")
+
+    def test_restore_checkpoint_repairs_legacy_other_sector(self) -> None:
+        collector = VietnamCollector()
+        restored = collector._restore_checkpoint_state(
+            {
+                "run_mode": "incremental",
+                "next_index": 1,
+                "payload": {
+                    "listing_rows": [
+                        {
+                            "ticker": "FPT",
+                            "name": "FPT Corp",
+                            "industry": "Công nghệ và thông tin",
+                        }
+                    ],
+                    "collected_rows": [
+                        {"ticker": "FPT", "name": "FPT Corp", "sector": "기타"}
+                    ],
+                    "used_dates": ["2026-07-10"],
+                },
+            }
+        )
+
+        self.assertEqual(restored["rows"][0]["sector"], "정보기술")
+
+    def test_rejects_all_other_sector_output(self) -> None:
+        collector = VietnamCollector()
+        frame = pd.DataFrame(
+            [{"ticker": f"T{i:02d}", "sector": "기타"} for i in range(10)]
+        )
+
+        with self.assertRaises(CollectionFailure) as ctx:
+            collector._validate_sector_coverage(frame)
+
+        self.assertEqual(ctx.exception.failure_code, "sector_metadata_missing")
 
     def test_select_listing_candidates_uses_active_abnormal_and_large_caps(self) -> None:
         self._seed_universe(
