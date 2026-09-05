@@ -708,13 +708,23 @@ def _scoreboard_verdict(stats: dict) -> str:
     if total < 10:
         return f"표본 부족 (검증 {total}건)"
     rate = stats["hit_rate"] or 0
-    if rate >= 0.6:
+    naive = stats.get("naive_rate") or 0
+    excess = stats.get("excess_vs_naive") or 0
+    ci_low = stats.get("ci95_low") or 0
+    ci_high = stats.get("ci95_high") or 0
+    if ci_low > naive:
         verdict = "가설 지지"
-    elif rate >= 0.525:
+    elif excess >= 0.05:
         verdict = "약한 지지"
+    elif rate < naive:
+        verdict = "기준선 미달"
     else:
         verdict = "지지 안 됨"
-    return f"{verdict} · 적중률 {rate * 100:.0f}% ({stats['hits']}/{total})"
+    return (
+        f"{verdict} · 적중 {rate * 100:.0f}% ({stats['hits']}/{total}, "
+        f"95% CI {ci_low * 100:.0f}~{ci_high * 100:.0f}%) · "
+        f"naive {naive * 100:.0f}% · 초과 {excess * 100:+.1f}%p"
+    )
 
 
 def _build_flow_scoreboard_lines(conn) -> list[str]:
