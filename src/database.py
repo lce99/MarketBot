@@ -907,34 +907,39 @@ def get_flow_signal_stats(
     conn: sqlite3.Connection,
     since_date: Optional[str] = None,
 ) -> dict:
-    """Aggregate verified flow signal outcomes for the hypothesis scoreboard."""
+    """Aggregate verified outcomes with confidence interval and naive baseline."""
+    from src.leadlag_evaluation import summarize_verified_signals
+
     query = """
-        SELECT
-            COUNT(*) AS total,
-            SUM(hit) AS hits,
-            SUM(CASE WHEN predicted_direction > 0 THEN 1 ELSE 0 END) AS up_total,
-            SUM(CASE WHEN predicted_direction > 0 THEN hit ELSE 0 END) AS up_hits,
-            SUM(CASE WHEN predicted_direction < 0 THEN 1 ELSE 0 END) AS down_total,
-            SUM(CASE WHEN predicted_direction < 0 THEN hit ELSE 0 END) AS down_hits
+        SELECT *
         FROM flow_signals
         WHERE status = 'verified'
+          AND hit IS NOT NULL
+          AND follower_return IS NOT NULL
     """
     params: list[object] = []
     if since_date:
         query += " AND created_date >= ?"
         params.append(since_date)
-
-    row = conn.execute(query, params).fetchone()
-    total = row["total"] or 0
-    return {
-        "total": total,
-        "hits": row["hits"] or 0,
-        "hit_rate": (row["hits"] or 0) / total if total else None,
-        "up_total": row["up_total"] or 0,
-        "up_hits": row["up_hits"] or 0,
-        "down_total": row["down_total"] or 0,
-        "down_hits": row["down_hits"] or 0,
-    }
+    rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+    stats = summarize_verified_signals(rows)
+    stats.update(
+        {
+            "up_total": stats["predicted_up"],
+            "up_hits": sum(
+                int(row.get("hit") or 0)
+                for row in rows
+                if int(row.get("predicted_direction") or 0) > 0
+            ),
+            "down_total": stats["predicted_down"],
+            "down_hits": sum(
+                int(row.get("hit") or 0)
+                for row in rows
+                if int(row.get("predicted_direction") or 0) < 0
+            ),
+        }
+    )
+    return stats
 
 
 def log_collection(

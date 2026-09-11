@@ -194,6 +194,18 @@ python -m scripts.checkpoint_db
 python -m unittest discover -s tests -v
 ```
 
+저장된 lead-lag 예측은 아래 명령으로 국가 페어·선행국·후행국·섹터·lag·방향별
+표본 수, 적중률, 95% Wilson 신뢰구간, 다수 방향 naive baseline 대비 초과 성과를
+JSON 또는 Markdown으로 재검증할 수 있습니다.
+
+```bash
+python -m scripts.evaluate_leadlag --format json
+python -m scripts.evaluate_leadlag --format markdown --min-sample 5
+```
+
+CN secret 누락과 VN rate-limit checkpoint 복구 절차는
+`docs/collection_recovery_runbook.md`를 따릅니다.
+
 포함 범위:
 
 - `scripts.collect` CLI 종료 코드
