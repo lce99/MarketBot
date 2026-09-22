@@ -1,0 +1,43 @@
+name: Export Investment Office Dashboard
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/export_dashboard.py
+      - .github/workflows/export_dashboard.yml
+  workflow_run:
+    workflows: [Collect Market Data, Send Daily Report]
+    types: [completed]
+    branches: [main]
+
+# Share the writers' lock. Never push or replace the database from this job.
+concurrency:
+  group: marketbot-db-commit
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Export public summary observations without model APIs
+        run: python scripts/export_dashboard.py --source-commit "$(git rev-parse HEAD)"
+      - name: Commit public dashboard snapshot
+        run: |
+          git config user.name "MarketBot"
+          git config user.email "marketbot@github.com"
+          git add docs/data/market-dashboard.json
+          git diff --cached --quiet || git commit -m "data: update Investment Office market dashboard"
+          git pull --rebase origin main
+          git push origin HEAD:main
