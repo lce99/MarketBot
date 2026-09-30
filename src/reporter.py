@@ -37,8 +37,8 @@ COUNTRY_INDEX_LABELS = {
     "DE": "DAX",
 }
 
-COUNTRY_ORDER = ["US", "KR", "CN", "JP", "VN", "IN", "DE"]
-UNSTABLE_COVERAGE_MARKETS = {"CN", "VN"}
+COUNTRY_ORDER = ["US", "KR", "JP", "VN", "IN", "DE"]
+UNSTABLE_COVERAGE_MARKETS = {"VN"}
 
 
 def _resolve_report_date(conn, date: str | None) -> str:

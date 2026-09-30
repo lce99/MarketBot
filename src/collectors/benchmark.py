@@ -8,6 +8,7 @@ import pandas as pd
 import yfinance as yf
 
 from src.config import BENCHMARK_TICKERS
+from src.markets import ACTIVE_MARKETS
 from src.database import get_connection, init_db, upsert_benchmark_daily
 
 logger = logging.getLogger(__name__)
@@ -79,12 +80,13 @@ def collect_benchmarks(date: str | None = None) -> int:
     dt = datetime.strptime(date, "%Y-%m-%d")
     start = (dt - timedelta(days=10)).strftime("%Y-%m-%d")
     end = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    active_benchmarks = {key: info for key, info in BENCHMARK_TICKERS.items() if info['country'] in ACTIVE_MARKETS}
 
     tickers_str = " ".join(
-        info["ticker"] for info in BENCHMARK_TICKERS.values()
+        info["ticker"] for info in active_benchmarks.values()
     )
 
-    logger.info(f"벤치마크 수집: {len(BENCHMARK_TICKERS)}개 티커")
+    logger.info(f"벤치마크 수집: {len(active_benchmarks)}개 티커")
 
     try:
         data = _download_with_retries(tickers_str, start, end)
@@ -100,7 +102,7 @@ def collect_benchmarks(date: str | None = None) -> int:
     conn = get_connection()
     rows = []
 
-    for key, info in BENCHMARK_TICKERS.items():
+    for key, info in active_benchmarks.items():
         ticker = info["ticker"]
         try:
             ticker_data = _extract_ticker_frame(data, ticker)
@@ -130,7 +132,7 @@ def collect_benchmarks(date: str | None = None) -> int:
                     weekly_return = ((close_price - week_ago) / week_ago) * 100
 
             rows.append({
-                "date": date,
+                "date": valid_data.index[-1].strftime("%Y-%m-%d"),
                 "ticker": ticker,
                 "name": key,
                 "country": info["country"],

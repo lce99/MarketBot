@@ -7,3 +7,18 @@ The `Export Investment Office Dashboard` workflow runs after Collect Market Data
 The public Investment Office at https://investment-office-kikoho.lostvalue887885.chatgpt.site/#/market loads this feed. Each country retains its own observation date; missing/unclassified sectors and stale data remain visible. Sector returns are filtered-stock simple averages, not cap-weighted benchmarks, capital inflows or earnings revisions. Lead/lag and direction-hit statistics remain exploratory.
 
 The Site keeps a fallback snapshot and its existing daily archive task refreshes both MarketBot and the report-collector archive. A browser refresh alone is not durable Site storage. Original source history stays in this repository.
+
+Active scope is US, KR, JP, VN, IN and DE. China is excluded from active collection,
+the public market/sector/benchmark/pair lists and coverage denominators; existing
+database rows and country metadata are retained. The additive `coverage` object
+contains `targetMarkets` (6), `freshMarkets` (markets with `stale=false`),
+`observedMarkets` (markets with a stored latest date), `activeMarkets` (the six
+codes), and `excludedMarkets` (`["CN"]`). Count observed dates rather than
+`generatedAt`. Derived trends/signals retain their own dates and are refreshed
+only by the separate analysis process, not by exporting collection results.
+
+Manual recovery uses the Collect Market Data workflow with `no_notifications=true`
+(the default). This supplies `--no-notifications` to preflight and collection,
+withholds Telegram credentials from those steps, preserves diagnostics and
+checkpoints on failure, and retains a failed workflow conclusion. It invokes no
+report preparation or report-sending entrypoint. Production secrets are unchanged.

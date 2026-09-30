@@ -9,10 +9,12 @@ import hashlib
 import json
 import math
 import sqlite3
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-MARKETS = {"US": "미국", "KR": "한국", "CN": "중국", "JP": "일본", "VN": "베트남", "IN": "인도", "DE": "독일"}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.markets import ACTIVE_MARKETS as MARKETS, EXCLUDED_MARKETS
 
 
 def export(db: Path, now: datetime | None = None, source_commit: str = "") -> dict:
@@ -30,6 +32,7 @@ def export(db: Path, now: datetime | None = None, source_commit: str = "") -> di
 
     sector_columns = dict(date="date", country="country", sector="sector", daily_return="dailyReturn", weekly_return="weeklyReturn", breadth="breadth", volume_change="volumeChange", stock_count="stockCount")
     sectors = query("sector_performance", sector_columns, "ORDER BY date,country,sector")
+    sectors = [row for row in sectors if row['country'] in MARKETS]
     latest = {}
     for row in sectors:
         latest[row['country']] = max(latest.get(row['country'], ''), row['date'])
@@ -44,13 +47,20 @@ def export(db: Path, now: datetime | None = None, source_commit: str = "") -> di
         markets.append(dict(code=code, name=name, latestDate=observed, calendarDaysOld=age, stale=age is None or age > 4, collection=logs[0] if logs else None))
 
     benchmarks = query("benchmark_daily", dict(date="date", country="country", ticker="ticker", name="name", sector="sector", close_price="close", daily_return="dailyReturn", weekly_return="weeklyReturn"), "WHERE (ticker,date) IN (SELECT ticker,MAX(date) FROM benchmark_daily GROUP BY ticker) ORDER BY country,ticker")
+    benchmarks = [row for row in benchmarks if row['country'] in MARKETS]
     trends = query("trend_scores", dict(date="date", sector="sector", trend_score="score", countries_positive="positive", countries_negative="negative", global_avg_return="averageReturn", global_breadth="breadth", momentum_signal="signal"), "WHERE date=(SELECT MAX(date) FROM trend_scores) ORDER BY trend_score DESC")
     lead_lag = query("lead_lag_scores", dict(date="date", sector="sector", leader="leader", follower="follower", lag="lag", correlation="correlation", direction_agreement="agreement", n_obs="observations"), "WHERE date=(SELECT MAX(date) FROM lead_lag_scores) ORDER BY correlation DESC")
     signals = query("flow_signals", dict(created_date="date", sector="sector", leader="leader", follower="follower", lag="lag", leader_return="leaderReturn", predicted_direction="direction", correlation="correlation", status="status", target_date="targetDate", follower_return="followerReturn", hit="hit"), "ORDER BY created_date DESC,sector,leader,follower LIMIT 100")
-    outcomes = query("flow_signals", dict(hit="hit", predicted_direction="direction"), "WHERE status='verified' AND hit IN (0,1)")
+    lead_lag = [row for row in lead_lag if row['leader'] in MARKETS and row['follower'] in MARKETS]
+    signals = [row for row in signals if row['leader'] in MARKETS and row['follower'] in MARKETS]
+    outcomes = query("flow_signals", dict(hit="hit", predicted_direction="direction", leader="leader", follower="follower"), "WHERE status='verified' AND hit IN (0,1)")
+    outcomes = [row for row in outcomes if row['leader'] in MARKETS and row['follower'] in MARKETS]
     stats = dict(verified=len(outcomes), hits=sum(r['hit'] for r in outcomes), hitRate=sum(r['hit'] for r in outcomes)/len(outcomes) if outcomes else None)
     conn.close()
     result = dict(schemaVersion=1, generatedAt=now.isoformat(), source=dict(repository="lce99/MarketBot", commit=source_commit, databaseSHA256=hashlib.sha256(db.read_bytes()).hexdigest()), latestDate=latest_date, historyStart=min((r['date'] for r in sectors), default=None), markets=markets, sectorHistory=sectors, benchmarks=benchmarks, trends=trends, leadLag=lead_lag, flowSignals=signals, signalStats=stats)
+    result['coverage'] = dict(targetMarkets=len(MARKETS), freshMarkets=sum(not m['stale'] for m in markets),
+                              observedMarkets=sum(m['latestDate'] is not None for m in markets),
+                              activeMarkets=list(MARKETS), excludedMarkets=list(EXCLUDED_MARKETS))
 
     def clean(value):
         if isinstance(value, float) and not math.isfinite(value):

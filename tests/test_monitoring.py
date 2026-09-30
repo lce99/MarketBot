@@ -100,6 +100,9 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(markets["VN"]["state"], "ERROR")
         self.assertEqual(markets["VN"]["last_failure_code"], "provider_rate_limited")
         self.assertEqual(markets["KR"]["state"], "NO_DATA")
+        self.assertEqual(len(markets), 6)
+        self.assertNotIn("CN", markets)
+        self.assertEqual(sum(snapshot['counts'].values()), 6)
 
     def test_format_status_report_mentions_failed_and_no_data_markets(self) -> None:
         text = format_status_report(as_of_date="2026-04-20")

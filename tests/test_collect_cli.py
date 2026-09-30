@@ -6,6 +6,32 @@ from scripts import collect
 
 
 class CollectCliSmokeTests(unittest.TestCase):
+    def test_all_excludes_china_and_suppresses_failure_notifications(self) -> None:
+        collector = Mock()
+        collector.run.return_value = False
+        with patch.object(sys, "argv", ["collect", "--market", "ALL", "--no-notifications"]), \
+             patch.object(collect, "get_collector", return_value=collector) as get_collector, \
+             patch.object(collect, "send_failure_alert") as alert:
+            with self.assertRaises(SystemExit):
+                collect.main()
+        self.assertEqual([call.args[0] for call in get_collector.call_args_list], ["US", "KR", "JP", "VN", "IN", "DE"])
+        alert.assert_not_called()
+
+    def test_china_is_rejected_without_calling_collector(self) -> None:
+        with self.assertRaisesRegex(ValueError, "excluded from active collection"):
+            collect.get_collector("CN")
+
+    def test_no_notifications_also_suppresses_preflight_failure_alert(self) -> None:
+        collector = Mock()
+        collector.run_preflight.side_effect = RuntimeError("provider unavailable")
+        with patch.object(sys, "argv", ["collect", "--market", "VN", "--preflight-only", "--no-notifications"]), \
+             patch.object(collect, "get_collector", return_value=collector), \
+             patch.object(collect, "send_failure_alert") as alert:
+            with self.assertRaises(SystemExit):
+                collect.main()
+        alert.assert_not_called()
+        collector.run.assert_not_called()
+
     def test_main_exits_when_collector_reports_no_data(self) -> None:
         collector = Mock()
         collector.run.return_value = False
@@ -33,7 +59,7 @@ class CollectCliSmokeTests(unittest.TestCase):
         with patch.object(sys, "argv", [
             "collect.py",
             "--market",
-            "CN",
+            "VN",
             "--date",
             "2026-04-20",
             "--preflight-only",
