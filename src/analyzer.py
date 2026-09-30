@@ -6,6 +6,7 @@
 """
 
 import logging
+from src.markets import ACTIVE_MARKETS
 
 from src.config import (
     COUNTRIES,
@@ -28,7 +29,8 @@ def _resolve_analysis_date(conn, date: str | None) -> str | None:
     if date is not None:
         return date
 
-    row = conn.execute("SELECT MAX(date) FROM sector_performance").fetchone()
+    placeholders = ','.join('?' for _ in ACTIVE_MARKETS)
+    row = conn.execute(f"SELECT MAX(date) FROM sector_performance WHERE country IN ({placeholders})", tuple(ACTIVE_MARKETS)).fetchone()
     return row[0] if row and row[0] else None
 
 
@@ -57,6 +59,8 @@ def compute_trend_scores(date: str | None = None):
     # 섹터별로 국가 데이터 그룹화
     sector_data: dict[str, list[dict]] = {}
     for row in all_perf:
+        if row['country'] not in ACTIVE_MARKETS:
+            continue
         sector = row["sector"]
         if sector == "기타":
             continue

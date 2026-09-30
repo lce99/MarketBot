@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.config import COUNTRIES
+from src.markets import ACTIVE_MARKETS
 from src.monitor import format_failure_alert, send_admin_alert
 
 logging.basicConfig(
@@ -37,6 +37,8 @@ def positive_int(value: str) -> int:
 
 def get_collector(market: str):
     """국가 코드에 맞는 수집기 인스턴스 반환."""
+    if market == "CN":
+        raise ValueError("CN is excluded from active collection; historical data is retained")
     if market == "KR":
         from src.collectors.korea import KoreaCollector
         return KoreaCollector()
@@ -52,9 +54,6 @@ def get_collector(market: str):
     elif market == "IN":
         from src.collectors.yfinance_collector import INCollector
         return INCollector()
-    elif market == "CN":
-        from src.collectors.china import ChinaCollector
-        return ChinaCollector()
     elif market == "VN":
         from src.collectors.vietnam import VietnamCollector
         return VietnamCollector()
@@ -92,11 +91,16 @@ def main():
     parser = argparse.ArgumentParser(description="MarketBot 데이터 수집")
     parser.add_argument(
         "--market", required=True,
-        help="시장 코드 (KR, US, CN, JP, VN, IN, DE) 또는 ALL"
+        help="시장 코드 (KR, US, JP, VN, IN, DE) 또는 ALL"
     )
     parser.add_argument(
         "--date", default=None,
         help="수집 날짜 (YYYY-MM-DD). 미지정 시 오늘."
+    )
+    parser.add_argument(
+        "--no-notifications",
+        action="store_true",
+        help="Suppress all collection failure notifications without hiding failures.",
     )
     parser.add_argument(
         "--preflight-only",
@@ -123,7 +127,7 @@ def main():
     date = args.date or datetime.utcnow().strftime("%Y-%m-%d")
 
     if args.market == "ALL":
-        markets = list(COUNTRIES.keys())
+        markets = list(ACTIVE_MARKETS)
     else:
         markets = [m.strip().upper() for m in args.market.split(",")]
 
@@ -158,7 +162,10 @@ def main():
             failed_markets.append(market)
 
     if failed_markets:
-        send_failure_alert(failed_markets, date)
+        if args.no_notifications:
+            logger.info("Collection notifications suppressed (--no-notifications)")
+        else:
+            send_failure_alert(failed_markets, date)
         failed_list = ", ".join(failed_markets)
         if args.preflight_only:
             raise SystemExit(f"preflight 실패 시장: {failed_list}")

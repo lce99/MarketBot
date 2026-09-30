@@ -10,6 +10,22 @@ from src.collectors import benchmark
 
 
 class BenchmarkCollectorTests(unittest.TestCase):
+    def test_benchmarks_exclude_china_and_keep_actual_observation_date(self) -> None:
+        frame = pd.DataFrame({"Close": [100.0, 101.0]}, index=pd.to_datetime(["2026-09-28", "2026-09-29"]))
+        tickers = {"US_IT": {"ticker": "XLK", "country": "US", "sector": "정보기술"},
+                   "CN_CSI300": {"ticker": "000300.SS", "country": "CN", "sector": None}}
+        with patch.object(benchmark, "BENCHMARK_TICKERS", tickers), \
+             patch.object(benchmark, "_download_with_retries", return_value=frame) as download:
+            self.assertEqual(benchmark.collect_benchmarks("2026-09-30"), 1)
+        self.assertEqual(download.call_args.args[0], "XLK")
+        conn = database.get_connection()
+        try:
+            row = conn.execute("SELECT date, country FROM benchmark_daily").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["date"], "2026-09-29")
+        self.assertEqual(row["country"], "US")
+
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.data_dir = Path(self.tempdir.name) / "data"

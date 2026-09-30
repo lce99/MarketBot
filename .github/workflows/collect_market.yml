@@ -7,7 +7,6 @@ on:
     # 도쿄 마감 (15:00 JST = 06:00 UTC)
     - cron: '30 6 * * 1-5'
     # 상하이 마감 (15:00 CST = 07:00 UTC)
-    - cron: '30 7 * * 1-5'
     # 베트남/홍콩 마감 (~08:00 UTC)
     - cron: '30 8 * * 1-5'
     # 인도 마감 (15:30 IST = 10:00 UTC)
@@ -19,9 +18,30 @@ on:
   workflow_dispatch:
     inputs:
       market:
-        description: '시장 코드 (KR, US, CN, JP, VN, IN, DE, ALL)'
+        description: '활성 시장 코드 (KR, US, JP, VN, IN, DE, ALL)'
         required: true
         default: 'KR'
+        type: choice
+        options: [KR, US, JP, VN, IN, DE, ALL, BENCHMARK]
+      date:
+        description: 'Observation date (YYYY-MM-DD; empty uses UTC today)'
+        default: ''
+      mode:
+        description: 'VN collection mode'
+        type: choice
+        default: auto
+        options: [auto, full, incremental, seed]
+      max_tickers:
+        description: 'Optional VN ticker limit'
+        default: ''
+      resume_from_checkpoint:
+        description: 'Resume VN saved checkpoint'
+        type: boolean
+        default: false
+      no_notifications:
+        description: 'Suppress all collection notifications'
+        type: boolean
+        default: true
 
 # data/marketbot.db를 커밋하는 워크플로끼리 동시 실행되면 rebase 충돌로
 # 수집 데이터가 유실되므로 같은 그룹으로 직렬화한다.
@@ -43,6 +63,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
+        id: install
         run: pip install -r requirements.txt
 
       - name: Determine market from schedule
@@ -54,7 +75,6 @@ jobs:
             case "${{ github.event.schedule }}" in
               '30 6 * * 1-5') market="JP" ;;
               '0 7 * * 1-5') market="KR" ;;
-              '30 7 * * 1-5') market="CN" ;;
               '30 8 * * 1-5') market="VN" ;;
               '0 10 * * 1-5') market="IN" ;;
               '0 17 * * 1-5') market="DE" ;;
@@ -68,28 +88,53 @@ jobs:
           echo "market=${market^^}" >> $GITHUB_OUTPUT
 
       - name: Run collection preflight
+        id: preflight
+        continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
-        run: python -m scripts.collect --market ${{ steps.market.outputs.market }} --preflight-only
+          TELEGRAM_BOT_TOKEN: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.no_notifications != 'true') && secrets.TELEGRAM_BOT_TOKEN || '' }}
+          TELEGRAM_CHAT_ID: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.no_notifications != 'true') && secrets.TELEGRAM_CHAT_ID || '' }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.no_notifications != 'true') && secrets.TELEGRAM_ALERT_CHAT_ID || '' }}
+          COLLECTION_DATE: ${{ github.event.inputs.date }}
+          NO_NOTIFICATIONS: ${{ github.event.inputs.no_notifications }}
+        run: |
+          args=(--market "${{ steps.market.outputs.market }}" --preflight-only)
+          if [ -n "$COLLECTION_DATE" ]; then args+=(--date "$COLLECTION_DATE"); fi
+          if [ "$NO_NOTIFICATIONS" = "true" ]; then args+=(--no-notifications); fi
+          python -m scripts.collect "${args[@]}"
 
       - name: Collect market data
+        id: collection
+        if: steps.preflight.outcome == 'success'
+        continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
-        run: python -m scripts.collect --market ${{ steps.market.outputs.market }}
+          TELEGRAM_BOT_TOKEN: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.no_notifications != 'true') && secrets.TELEGRAM_BOT_TOKEN || '' }}
+          TELEGRAM_CHAT_ID: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.no_notifications != 'true') && secrets.TELEGRAM_CHAT_ID || '' }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.no_notifications != 'true') && secrets.TELEGRAM_ALERT_CHAT_ID || '' }}
+          COLLECTION_DATE: ${{ github.event.inputs.date }}
+          COLLECTION_MODE: ${{ github.event.inputs.mode }}
+          COLLECTION_MAX_TICKERS: ${{ github.event.inputs.max_tickers }}
+          COLLECTION_RESUME: ${{ github.event.inputs.resume_from_checkpoint }}
+          NO_NOTIFICATIONS: ${{ github.event.inputs.no_notifications }}
+        run: |
+          args=(--market "${{ steps.market.outputs.market }}")
+          if [ -n "$COLLECTION_DATE" ]; then args+=(--date "$COLLECTION_DATE"); fi
+          if [ "$NO_NOTIFICATIONS" = "true" ]; then args+=(--no-notifications); fi
+          if [ "${{ steps.market.outputs.market }}" = "VN" ]; then
+            if [ -n "$COLLECTION_MODE" ] && [ "$COLLECTION_MODE" != "auto" ]; then args+=(--mode "$COLLECTION_MODE"); fi
+            if [ -n "$COLLECTION_MAX_TICKERS" ]; then args+=(--max-tickers "$COLLECTION_MAX_TICKERS"); fi
+            if [ "$COLLECTION_RESUME" = "true" ]; then args+=(--resume-from-checkpoint); fi
+          fi
+          python -m scripts.collect "${args[@]}"
 
       - name: Checkpoint database
+        id: checkpoint
+        if: always() && steps.install.outcome == 'success' && steps.preflight.outcome != 'skipped'
         run: python -m scripts.checkpoint_db
 
       - name: Upload raw database artifact
-        if: steps.market.outputs.market != 'BENCHMARK'
+        if: always() && steps.checkpoint.outcome == 'success' && steps.market.outputs.market != 'BENCHMARK'
         uses: actions/upload-artifact@v4
         with:
           name: marketbot-raw-db-${{ github.run_id }}-${{ steps.market.outputs.market }}
@@ -98,6 +143,7 @@ jobs:
           retention-days: 14
 
       - name: Commit summary database
+        if: always() && steps.checkpoint.outcome == 'success'
         run: |
           git config user.name "MarketBot"
           git config user.email "marketbot@github.com"
@@ -108,9 +154,9 @@ jobs:
 
       - name: Collect benchmarks
         id: benchmark
-        if: steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL'
+        if: steps.collection.outcome == 'success' && (steps.market.outputs.market == 'US' || github.event.inputs.market == 'ALL')
         continue-on-error: true
-        run: python -m scripts.collect --market BENCHMARK
+        run: python -m scripts.collect --market BENCHMARK --no-notifications
 
       - name: Checkpoint benchmark database
         if: steps.benchmark.outcome == 'success'
@@ -129,3 +175,9 @@ jobs:
       - name: Note benchmark failure
         if: steps.benchmark.outcome == 'failure'
         run: echo "Benchmark collection failed after primary market data commit."
+
+      - name: Preserve failed collection status
+        if: always() && (steps.preflight.outcome == 'failure' || steps.collection.outcome == 'failure')
+        run: |
+          echo "Collection failed; diagnostics and checkpoints were preserved." >&2
+          exit 1

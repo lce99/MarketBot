@@ -21,6 +21,7 @@ from src.database import (
     get_latest_sector_dates_by_country,
     get_recent_collection_logs,
 )
+from src.markets import ACTIVE_MARKETS
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ def get_operational_status(
 
         markets = []
         for code, info in COUNTRIES.items():
+            if code not in ACTIVE_MARKETS:
+                continue
             latest_event = get_latest_collection_log(conn, code)
             latest_success = get_latest_collection_log(conn, code, status="success")
             latest_failure = get_latest_collection_log(conn, code, status="failed")
@@ -103,6 +106,7 @@ def get_operational_status(
             "STALE": sum(1 for market in markets if market["state"] == "STALE"),
             "NO_DATA": sum(1 for market in markets if market["state"] == "NO_DATA"),
         }
+        recent_failures = [row for row in recent_failures if row['market'] in ACTIVE_MARKETS]
     finally:
         conn.close()
 

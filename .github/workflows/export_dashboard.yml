@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - scripts/export_dashboard.py
+      - src/markets.py
       - .github/workflows/export_dashboard.yml
   workflow_run:
     workflows: [Collect Market Data, Send Daily Report]

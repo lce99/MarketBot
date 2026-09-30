@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from itertools import permutations
 
 import pandas as pd
+from src.markets import ACTIVE_MARKETS
 
 from src.config import (
     COUNTRIES,
@@ -68,7 +69,8 @@ def _allowed_lags(leader: str, follower: str) -> list[int]:
 def _resolve_analysis_date(conn, date: str | None) -> str | None:
     if date is not None:
         return date
-    row = conn.execute("SELECT MAX(date) FROM sector_performance").fetchone()
+    placeholders = ','.join('?' for _ in ACTIVE_MARKETS)
+    row = conn.execute(f"SELECT MAX(date) FROM sector_performance WHERE country IN ({placeholders})", tuple(ACTIVE_MARKETS)).fetchone()
     return row[0] if row and row[0] else None
 
 
@@ -163,7 +165,7 @@ def compute_lead_lag_scores(date: str | None = None) -> list[dict]:
                 columns="country",
                 values="daily_return",
             ).sort_index()
-            countries = [c for c in pivot.columns if pivot[c].notna().sum() >= LEADLAG_MIN_OVERLAP]
+            countries = [c for c in pivot.columns if c in ACTIVE_MARKETS and pivot[c].notna().sum() >= LEADLAG_MIN_OVERLAP]
             for leader, follower in permutations(countries, 2):
                 scored = _score_pair(pivot, leader, follower)
                 if scored is None:
