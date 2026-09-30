@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 # vnstock 업종 → GICS 매핑 (영문 industry name 기반)
 VN_SECTOR_MAP = {
+    # ICB/GICS level-1 names returned by vnstock 4.x.
+    "Financials": "금융",
+    "Industrials": "산업재",
+    "Materials": "소재",
+    "Health Care": "헬스케어",
+    "Communication Services": "커뮤니케이션",
     "Banks": "금융",
     "Financial Services": "금융",
     "Insurance": "금융",
@@ -78,7 +84,66 @@ VN_SECTOR_MAP = {
     "Mining": "소재",
     "Rubber": "소재",
     "Plastics": "소재",
+    # KBS ``symbols_by_industries`` returns Vietnamese labels.
+    "Bán buôn": "산업재",
+    "Bảo hiểm": "금융",
+    "Bất động sản": "부동산",
+    "Chứng khoán": "금융",
+    "Công nghệ và thông tin": "정보기술",
+    "Bán lẻ": "경기소비재",
+    "Chăm sóc sức khỏe": "헬스케어",
+    "Khai khoáng": "소재",
+    "Ngân hàng": "금융",
+    "Nông - Lâm - Ngư": "필수소비재",
+    "SX Thiết bị, máy móc": "산업재",
+    "SX Hàng gia dụng": "경기소비재",
+    "Sản phẩm cao su": "소재",
+    "SX Nhựa - Hóa chất": "소재",
+    "Thực phẩm - Đồ uống": "필수소비재",
+    "Chế biến Thủy sản": "필수소비재",
+    "Vật liệu xây dựng": "소재",
+    "Tiện ích": "유틸리티",
+    "Vận tải - kho bãi": "산업재",
+    "Xây dựng": "산업재",
+    "Dịch vụ lưu trú, ăn uống, giải trí": "경기소비재",
+    "SX Phụ trợ": "산업재",
+    "Thiết bị điện": "산업재",
+    "Dịch vụ tư vấn, hỗ trợ": "산업재",
+    "Tài chính khác": "금융",
+    # VCI level-1 Vietnamese ICB labels.
+    "Tài chính": "금융",
+    "Công nghiệp": "산업재",
+    "Nguyên vật liệu": "소재",
+    "Y tế": "헬스케어",
+    "Công nghệ Thông tin": "정보기술",
+    "Dịch vụ Viễn thông": "커뮤니케이션",
+    "Hàng Tiêu dùng": "경기소비재",
+    "Hàng Tiêu dùng thiết yếu": "필수소비재",
+    "Dầu khí": "에너지",
+    "Tiện ích Cộng đồng": "유틸리티",
 }
+
+_VN_SECTOR_MAP_NORMALIZED = {
+    " ".join(name.split()).casefold(): sector
+    for name, sector in VN_SECTOR_MAP.items()
+}
+_VN_CANONICAL_SECTORS = set(VN_SECTOR_MAP.values())
+
+
+def map_vietnam_sector(*values: object) -> str:
+    """Normalize vnstock English/Vietnamese industry labels to one sector."""
+    for value in values:
+        if value is None or (not isinstance(value, str) and pd.isna(value)):
+            continue
+        label = " ".join(str(value).strip().split())
+        if not label:
+            continue
+        if label in _VN_CANONICAL_SECTORS:
+            return label
+        mapped = _VN_SECTOR_MAP_NORMALIZED.get(label.casefold())
+        if mapped:
+            return mapped
+    return "기타"
 
 
 class VietnamCollector(BaseCollector):
@@ -568,6 +633,20 @@ class VietnamCollector(BaseCollector):
         listing = pd.DataFrame(listing_rows)
         next_index = int(checkpoint.get("next_index") or 0)
         rows = payload.get("collected_rows") or []
+        listing_by_ticker = {
+            str(row.get("ticker") or row.get("symbol") or ""): row
+            for row in listing_rows
+        }
+        for row in rows:
+            if row.get("sector") not in (None, "", "기타"):
+                continue
+            listing_row = listing_by_ticker.get(str(row.get("ticker") or ""), {})
+            row["sector"] = map_vietnam_sector(
+                listing_row.get("sector"),
+                listing_row.get("industry"),
+                listing_row.get("en_icb_name"),
+                listing_row.get("icb_name"),
+            )
         used_dates = payload.get("used_dates") or []
 
         self.run_mode = checkpoint.get("run_mode") or self.get_run_mode()
@@ -825,7 +904,14 @@ class VietnamCollector(BaseCollector):
                     break
         if "industry" not in listing.columns:
             industry = None
-            for column in ("industry_name", "icb_name3", "icb_name2", "sector"):
+            for column in (
+                "en_icb_name",
+                "industry_name",
+                "icb_name",
+                "icb_name3",
+                "icb_name2",
+                "sector",
+            ):
                 if column in listing.columns:
                     industry = listing[column]
                     break
@@ -876,6 +962,21 @@ class VietnamCollector(BaseCollector):
                 merged["industry"] = merged["industry"].fillna(fallback_industry)
 
         return merged
+
+    def _validate_sector_coverage(self, frame: pd.DataFrame) -> None:
+        """Fail loudly when provider metadata would poison every VN sector row."""
+        if frame.empty or "sector" not in frame.columns:
+            return
+        mapped = frame["sector"].fillna("기타").ne("기타")
+        if len(frame) >= 10 and not bool(mapped.any()):
+            raise CollectionFailure(
+                message="vnstock 업종 메타데이터를 표준 섹터로 매핑하지 못했습니다.",
+                failure_code="sector_metadata_missing",
+                failure_stage="normalize_sector",
+                provider="vnstock",
+                raw_error_excerpt=f"mapped_sectors=0/{len(frame)}",
+                run_mode=self.get_run_mode(),
+            )
 
     def _select_listing_candidates(
         self,
@@ -1040,6 +1141,7 @@ class VietnamCollector(BaseCollector):
             if start_index >= len(listing):
                 logger.info("[VN] checkpoint already reached the end, finalizing cached rows")
                 df = pd.DataFrame(rows)
+                self._validate_sector_coverage(df)
                 if used_dates:
                     self.effective_date = max(used_dates)
                 self._clear_checkpoint(date, self.get_run_mode())
@@ -1075,12 +1177,12 @@ class VietnamCollector(BaseCollector):
                         weekly_return = self._compute_weekly_return(hist)
                         avg_volume_20d = self._compute_avg_volume(hist)
 
-                        cached_sector = info.get("sector")
-                        if cached_sector:
-                            sector = cached_sector
-                        else:
-                            industry = info.get("industry", "") or ""
-                            sector = VN_SECTOR_MAP.get(industry, "기타")
+                        sector = map_vietnam_sector(
+                            info.get("sector"),
+                            info.get("industry"),
+                            info.get("en_icb_name"),
+                            info.get("icb_name"),
+                        )
 
                         market_cap = info.get("market_cap")
                         if pd.isna(market_cap) or market_cap in ("", None):
@@ -1159,6 +1261,7 @@ class VietnamCollector(BaseCollector):
                     processed_since_log = 0
 
             df = pd.DataFrame(rows)
+            self._validate_sector_coverage(df)
             if used_dates:
                 self.effective_date = max(used_dates)
             self._clear_checkpoint(date, self.get_run_mode())
