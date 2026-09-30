@@ -302,6 +302,20 @@ class CollectorContractTests(unittest.TestCase):
             ],
         )
 
+    def test_yfinance_duplicate_constituents_do_not_duplicate_quotes(self) -> None:
+        fixture = load_fixture("yfinance")
+        configured = ["6758.T", "8306.T", "6758.T"]
+        collector = YfinanceCollector("JP", configured)
+        with patch("src.collectors.yfinance_collector.yf.download",
+                   return_value=build_download_frame(fixture["prices"])) as download:
+            with patch.object(collector, "_add_sector_and_cap", side_effect=lambda df, _date: df):
+                with patch("src.collectors.yfinance_collector.time.sleep", return_value=None):
+                    actual = collector.fetch_all_stocks("2026-04-20")
+        self.assertEqual(download.call_args.args[0], "6758.T 8306.T")
+        self.assertEqual(actual["ticker"].tolist(), ["6758.T", "8306.T"])
+        self.assertEqual(len(actual), 2)
+        self.assertEqual(configured, ["6758.T", "8306.T", "6758.T"])
+
     def test_vietnam_collector_contract_from_provider_fixtures(self) -> None:
         fixture = load_fixture("vietnam")
         collector = VietnamCollector()
