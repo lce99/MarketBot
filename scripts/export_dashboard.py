@@ -56,11 +56,30 @@ def export(db: Path, now: datetime | None = None, source_commit: str = "") -> di
     outcomes = query("flow_signals", dict(hit="hit", predicted_direction="direction", leader="leader", follower="follower"), "WHERE status='verified' AND hit IN (0,1)")
     outcomes = [row for row in outcomes if row['leader'] in MARKETS and row['follower'] in MARKETS]
     stats = dict(verified=len(outcomes), hits=sum(r['hit'] for r in outcomes), hitRate=sum(r['hit'] for r in outcomes)/len(outcomes) if outcomes else None)
+    refreshes = query('dashboard_analytics_refresh', dict(timestamp='timestamp', as_of_date='asOfDate',
+        input_dates_json='inputDates', trend_input_markets_json='trendInputMarkets', trend_sectors='trendSectors',
+        pairs_scored='pairsScored', signals_created='signalsCreated', outcomes_verified='outcomesVerified',
+        outcomes_expired='outcomesExpired'), 'ORDER BY timestamp DESC,id DESC LIMIT 1')
+    refresh = refreshes[0] if refreshes else None
+    if refresh:
+        for field in ('inputDates', 'trendInputMarkets'):
+            refresh[field] = json.loads(refresh[field])
+
+    def analytics_status(rows):
+        observed = max((r['date'] for r in rows if r.get('date')), default=None)
+        age = (now.date() - date.fromisoformat(observed)).days if observed else None
+        evaluated = max((day for day in (observed, refresh['asOfDate'] if refresh else None) if day), default=None)
+        return dict(latestDate=observed, calendarDaysOld=age, stale=age is None or age > 4,
+                    evaluatedThrough=evaluated, rowCount=len(rows))
+
+    analytics = dict(latestRefresh=refresh, trends=analytics_status(trends),
+                     leadLag=analytics_status(lead_lag), flowSignals=analytics_status(signals))
     conn.close()
     result = dict(schemaVersion=1, generatedAt=now.isoformat(), source=dict(repository="lce99/MarketBot", commit=source_commit, databaseSHA256=hashlib.sha256(db.read_bytes()).hexdigest()), latestDate=latest_date, historyStart=min((r['date'] for r in sectors), default=None), markets=markets, sectorHistory=sectors, benchmarks=benchmarks, trends=trends, leadLag=lead_lag, flowSignals=signals, signalStats=stats)
     result['coverage'] = dict(targetMarkets=len(MARKETS), freshMarkets=sum(not m['stale'] for m in markets),
                               observedMarkets=sum(m['latestDate'] is not None for m in markets),
                               activeMarkets=list(MARKETS), excludedMarkets=list(EXCLUDED_MARKETS))
+    result['analytics'] = analytics
 
     def clean(value):
         if isinstance(value, float) and not math.isfinite(value):
@@ -86,6 +105,8 @@ def main():
     temporary.replace(args.output)
     stale = ",".join(market['code'] for market in data['markets'] if market['stale']) or "none"
     print(f"Exported {len(data['sectorHistory'])} sector observations; latest observation {data['latestDate']}; stale/missing markets: {stale}")
+    stale_analytics = ','.join(name for name in ('trends', 'leadLag', 'flowSignals') if data['analytics'][name]['stale']) or 'none'
+    print(f"Derived analytics stale/missing: {stale_analytics}")
 
 
 if __name__ == '__main__':

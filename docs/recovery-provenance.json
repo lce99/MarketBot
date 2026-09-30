@@ -1,0 +1,5 @@
+[
+  {"market": "JP", "timestamp": "2026-09-30T11:47:15.349565", "expectedProvider": "finnhub", "provider": "yfinance", "run": 36710604552},
+  {"market": "IN", "timestamp": "2026-09-30T11:32:04.095275", "expectedProvider": "finnhub", "provider": "yfinance", "run": 36709041382},
+  {"market": "DE", "timestamp": "2026-09-30T11:49:21.639328", "expectedProvider": "finnhub", "provider": "yfinance", "run": 36710823675}
+]
