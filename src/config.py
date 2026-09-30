@@ -80,7 +80,7 @@ COUNTRIES = {
     "VN": {
         "name_kr": "베트남",
         "flag": "\U0001f1fb\U0001f1f3",
-        "collector": "vnstock",
+        "collector": "vietnam-http",
         "exchange": "HOSE",
         "currency": "VND",
         "close_utc": "08:00",

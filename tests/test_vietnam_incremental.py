@@ -1,5 +1,4 @@
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -226,14 +225,13 @@ class VietnamIncrementalTests(unittest.TestCase):
         )
 
         with patch.object(collector, "_load_listing", return_value=listing):
-            with patch.dict("sys.modules", {"vnstock": types.ModuleType("vnstock")}):
-                with patch.object(
-                    collector,
-                    "_load_history",
-                    side_effect=[history, rate_limited],
-                ):
-                    with self.assertRaises(CollectionFailure) as ctx:
-                        collector.fetch_all_stocks("2026-04-21")
+            with patch.object(
+                collector,
+                "_load_history",
+                side_effect=[history, rate_limited],
+            ):
+                with self.assertRaises(CollectionFailure) as ctx:
+                    collector.fetch_all_stocks("2026-04-21")
 
         self.assertEqual(ctx.exception.failure_code, "provider_rate_limited")
         checkpoint = self._load_checkpoint("2026-04-21", run_mode="seed")
@@ -308,18 +306,17 @@ class VietnamIncrementalTests(unittest.TestCase):
             ]
         )
 
-        with patch.dict("sys.modules", {"vnstock": types.ModuleType("vnstock")}):
+        with patch.object(
+            collector,
+            "_load_listing",
+            side_effect=AssertionError("listing should come from checkpoint"),
+        ):
             with patch.object(
                 collector,
-                "_load_listing",
-                side_effect=AssertionError("listing should come from checkpoint"),
-            ):
-                with patch.object(
-                    collector,
-                    "_load_history",
-                    return_value=history,
-                ) as mock_history:
-                    result = collector.fetch_all_stocks("2026-04-21")
+                "_load_history",
+                return_value=history,
+            ) as mock_history:
+                result = collector.fetch_all_stocks("2026-04-21")
 
         self.assertEqual(set(result["ticker"]), {"AAA", "BBB"})
         mock_history.assert_called_once()
@@ -334,43 +331,19 @@ class VietnamIncrementalTests(unittest.TestCase):
             ]
         )
 
-        class DummyQuote:
-            def __init__(self, symbol: str, source: str) -> None:
-                self.symbol = symbol
-                self.source = source
-
-        class DummyVnstock:
-            def stock(self, symbol: str, source: str):
-                raise AssertionError("legacy fallback should not run")
-
-        dummy_module = types.ModuleType("vnstock")
-        dummy_module.Quote = DummyQuote
-        dummy_module.Vnstock = DummyVnstock
-        call_order: list[str] = []
-
-        def fake_call(func, *, stage, context_label, provider_label=None):
-            call_order.append(provider_label)
-            if provider_label == "vnstock:KBS":
-                raise CollectionFailure(
-                    message="rate limited",
-                    failure_code="provider_rate_limited",
-                    failure_stage=stage,
-                    provider=provider_label,
-                    run_mode="incremental",
-                )
+        call_order = []
+        def fetch(source, ticker, start, end, **kwargs):
+            call_order.append(source)
+            if source == "KBS":
+                raise CollectionFailure("rate limited", "provider_rate_limited", "fetch_history",
+                                        provider="vietnam-http:KBS", run_mode="incremental")
             return history
 
-        with patch.dict("sys.modules", {"vnstock": dummy_module}):
-            with patch.object(collector, "_throttle_requests", return_value=None):
-                with patch.object(collector, "_call_provider", side_effect=fake_call):
-                    result = collector._load_history(
-                        "VCB",
-                        "2026-04-01",
-                        "2026-04-21",
-                    )
+        with patch("src.collectors.vietnam.vietnam_provider.fetch_history", side_effect=fetch):
+            result = collector._load_history("VCB", "2026-04-01", "2026-04-21")
 
         pd.testing.assert_frame_equal(result, history)
-        self.assertEqual(call_order, ["vnstock:KBS", "vnstock:VCI"])
+        self.assertEqual(call_order, ["KBS", "VCI"])
         self.assertIn("KBS", collector._blocked_sources_by_stage["fetch_history"])
 
     def test_prepare_target_listing_auto_mitigates_after_repeated_failures(self) -> None:

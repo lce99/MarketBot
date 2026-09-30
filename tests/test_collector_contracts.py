@@ -1,12 +1,15 @@
 import json
 import sys
 import types
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pandas as pd
 from pandas.testing import assert_frame_equal
+
+import src.database as database
 
 from src.collectors.china import ChinaCollector
 from src.collectors.finnhub_collector import FinnhubCollector
@@ -52,6 +55,22 @@ def build_download_frame(price_rows: list[dict]) -> pd.DataFrame:
 
 
 class CollectorContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        data_dir = Path(self.tempdir.name)
+        self.patchers = [
+            patch.object(database, "DATA_DIR", data_dir),
+            patch.object(database, "DB_PATH", data_dir / "marketbot.db"),
+            patch.object(database, "RAW_DB_PATH", data_dir / "marketbot_raw.db"),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+    def tearDown(self) -> None:
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.tempdir.cleanup()
+
     def assert_contract_frame(
         self,
         actual: pd.DataFrame,
@@ -283,61 +302,16 @@ class CollectorContractTests(unittest.TestCase):
             ],
         )
 
-    def test_vietnam_collector_contract_from_vnstock_fixtures(self) -> None:
+    def test_vietnam_collector_contract_from_provider_fixtures(self) -> None:
         fixture = load_fixture("vietnam")
-
-        class FakeListing:
-            def __init__(self, source=None):
-                self.source = source
-
-            def all_symbols(self):
-                return pd.DataFrame(
-                    [
-                        {
-                            "symbol": row["ticker"],
-                            "organ_name": row["name"],
-                            "market_cap": row["market_cap"],
-                        }
-                        for row in fixture["listing"]
-                    ]
-                )
-
-            def symbols_by_industries(self):
-                return pd.DataFrame(
-                    [
-                        {
-                            "symbol": row["ticker"],
-                            "organ_name": row["name"],
-                            "industry_name": row["industry"],
-                            "market_cap": row["market_cap"],
-                        }
-                        for row in fixture["listing"]
-                    ]
-                )
-
-        class FakeVnstock:
-            def stock(self, symbol=None, source=None):
-                return types.SimpleNamespace(
-                    quote=types.SimpleNamespace(
-                        history=lambda start, end, _symbol=symbol: pd.DataFrame(
-                            fixture["histories"][_symbol]
-                        )
-                    )
-                )
-
-        fake_vnstock = types.ModuleType("vnstock")
-        fake_vnstock.Vnstock = FakeVnstock
-        fake_vnstock.Listing = FakeListing
-
-        with patch.dict(sys.modules, {"vnstock": fake_vnstock}):
-            with patch("src.collectors.vietnam.time.sleep", return_value=None):
-                collector = VietnamCollector()
-                with patch.object(
-                    collector,
-                    "_select_listing_candidates",
-                    side_effect=lambda listing, _date: listing,
-                ):
-                    actual = collector.fetch_all_stocks("2026-04-20")
+        collector = VietnamCollector()
+        with patch("src.collectors.vietnam.vietnam_provider.fetch_listing",
+                   return_value=pd.DataFrame(fixture["listing"])):
+            with patch("src.collectors.vietnam.vietnam_provider.fetch_history",
+                       side_effect=lambda source, ticker, start, end, **kw: pd.DataFrame(fixture["histories"][ticker])):
+                with patch("src.collectors.vietnam.time.sleep", return_value=None):
+                    with patch.object(collector, "_select_listing_candidates", side_effect=lambda listing, _date: listing):
+                        actual = collector.fetch_all_stocks("2026-04-20")
 
         self.assertEqual(collector.effective_date, "2026-04-20")
         self.assert_contract_frame(

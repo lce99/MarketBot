@@ -1,9 +1,7 @@
-"""베트남 시장 수집기 - vnstock 기반 HOSE/HNX 전종목 수집."""
+"""베트남 시장 수집기 - KBS/VCI HTTP 기반 HOSE/HNX 전종목 수집."""
 
 from __future__ import annotations
 
-import contextlib
-import io
 import logging
 import time
 from collections import deque
@@ -11,7 +9,8 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from src.collection_failures import CollectionFailure, summarize_raw_error
+from src.collection_failures import CollectionFailure
+from src.collectors import vietnam_provider
 from src.collectors.base import BaseCollector
 from src.collectors.date_utils import compute_period_return_from_closes
 from src.config import (
@@ -81,6 +80,34 @@ VN_SECTOR_MAP = {
 }
 
 
+VN_SECTOR_MAP.update({
+    "Bán lẻ": "경기소비재", "Dịch vụ lưu trú, ăn uống, giải trí": "경기소비재",
+    "Dịch vụ tư vấn, hỗ trợ": "산업재", "Thiết bị điện": "산업재",
+    "Sản phẩm cao su": "소재", "Xây dựng": "산업재", "Bảo hiểm": "금융",
+    "SX Hàng gia dụng": "경기소비재", "Ngân hàng": "금융",
+    "Chế biến Thủy sản": "필수소비재", "Nông - Lâm - Ngư": "필수소비재",
+    "SX Thiết bị, máy móc": "산업재", "Thực phẩm - Đồ uống": "필수소비재",
+    "Bán buôn": "산업재", "Chứng khoán": "금융", "Công nghệ và thông tin": "정보기술",
+    "SX Nhựa - Hóa chất": "소재", "Vật liệu xây dựng": "소재", "Bất động sản": "부동산",
+    "Chăm sóc sức khỏe": "헬스케어", "Vận tải - kho bãi": "산업재", "Tài chính khác": "금융",
+    "Khai khoáng": "소재", "Tiện ích": "유틸리티", "SX Phụ trợ": "산업재",
+    "Financials": "금융", "Industrials": "산업재", "Basic Materials": "소재",
+    "Health Care": "헬스케어", "Consumer Services": "경기소비재", "Telecommunications": "커뮤니케이션",
+})
+
+
+def map_vietnam_sector(*labels) -> str:
+    for label in labels:
+        if not isinstance(label, str):
+            continue
+        label = label.strip()
+        if label in VN_SECTOR_MAP.values():
+            return label
+        if label in VN_SECTOR_MAP:
+            return VN_SECTOR_MAP[label]
+    return "기타"
+
+
 class VietnamCollector(BaseCollector):
     country_code = "VN"
 
@@ -127,112 +154,6 @@ class VietnamCollector(BaseCollector):
                 self._request_timestamps.popleft()
 
         self._request_timestamps.append(time.monotonic())
-
-    def _looks_like_rate_limit(
-        self,
-        exc: BaseException | None = None,
-        captured_output: str | None = None,
-    ) -> bool:
-        text = " ".join(
-            part
-            for part in (
-                str(exc) if exc is not None else "",
-                captured_output or "",
-            )
-            if part
-        ).lower()
-        return any(
-            token in text
-            for token in (
-                "rate limit",
-                "limit exceeded",
-                "maximum api request",
-                "wait to retry",
-                "giới hạn api",
-                "requests/phút",
-            )
-        )
-
-    def _call_provider(
-        self,
-        func,
-        *,
-        stage: str,
-        context_label: str,
-        provider_label: str | None = None,
-    ):
-        provider_name = provider_label or "vnstock"
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(stdout_buffer):
-                with contextlib.redirect_stderr(stderr_buffer):
-                    result = func()
-        except SystemExit as exc:
-            captured = summarize_raw_error(
-                "\n".join(
-                    part
-                    for part in (stdout_buffer.getvalue(), stderr_buffer.getvalue())
-                    if part
-                )
-            )
-            if self._looks_like_rate_limit(exc, captured):
-                raise CollectionFailure(
-                    message="vnstock API 호출 한도를 초과했습니다.",
-                    failure_code="provider_rate_limited",
-                    failure_stage=stage,
-                    provider=provider_name,
-                    raw_error_excerpt=captured or str(exc),
-                    run_mode=self.get_run_mode(),
-                ) from None
-            raise CollectionFailure(
-                message=f"vnstock provider terminated during {context_label}",
-                failure_code="provider_error",
-                failure_stage=stage,
-                provider=provider_name,
-                raw_error_excerpt=captured or str(exc),
-                run_mode=self.get_run_mode(),
-            ) from None
-        except Exception as exc:
-            captured = summarize_raw_error(
-                "\n".join(
-                    part
-                    for part in (
-                        stdout_buffer.getvalue(),
-                        stderr_buffer.getvalue(),
-                        str(exc),
-                    )
-                    if part
-                )
-            )
-            if self._looks_like_rate_limit(exc, captured):
-                raise CollectionFailure(
-                    message="vnstock API 호출 한도를 초과했습니다.",
-                    failure_code="provider_rate_limited",
-                    failure_stage=stage,
-                    provider=provider_name,
-                    raw_error_excerpt=captured or str(exc),
-                    run_mode=self.get_run_mode(),
-                ) from exc
-            raise
-
-        captured = summarize_raw_error(
-            "\n".join(
-                part
-                for part in (stdout_buffer.getvalue(), stderr_buffer.getvalue())
-                if part
-            )
-        )
-        if self._looks_like_rate_limit(captured_output=captured):
-            raise CollectionFailure(
-                message="vnstock API 호출 한도를 초과했습니다.",
-                failure_code="provider_rate_limited",
-                failure_stage=stage,
-                provider=provider_name,
-                raw_error_excerpt=captured,
-                run_mode=self.get_run_mode(),
-            )
-        return result
 
     def _extract_source(self, provider: str | None) -> str | None:
         if not provider:
@@ -591,7 +512,7 @@ class VietnamCollector(BaseCollector):
         }
 
     def _load_listing_from_cached_universe(self) -> pd.DataFrame:
-        """Fall back to the last cached universe when vnstock listing APIs fail."""
+        """Fall back to the last cached universe when public listing APIs fail."""
         try:
             conn = get_connection()
             try:
@@ -622,191 +543,47 @@ class VietnamCollector(BaseCollector):
 
         listing = listing.drop_duplicates(subset=["ticker"]).reset_index(drop=True)
         logger.warning(
-            f"[VN] vnstock listing unavailable, using cached universe: {len(listing)} tickers"
+            f"[VN] public listing unavailable, using cached universe: {len(listing)} tickers"
         )
         return listing
 
     def _load_listing(self) -> pd.DataFrame:
-        """Load the Vietnam listing table across supported vnstock versions."""
-        errors: list[str] = []
-        last_rate_limit: CollectionFailure | None = None
-
-        try:
-            from vnstock import Listing
-
-            for source in self._get_source_order("load_listing"):
-                try:
-                    listing_client = Listing(source=source)
-                    base_listing = self._call_provider(
-                        lambda: listing_client.all_symbols(),
-                        stage="load_listing",
-                        context_label=f"Listing API ({source}) all_symbols",
-                        provider_label=f"vnstock:{source}",
-                    )
-                    industries = self._call_provider(
-                        lambda: listing_client.symbols_by_industries(),
-                        stage="load_listing",
-                        context_label=f"Listing API ({source}) symbols_by_industries",
-                        provider_label=f"vnstock:{source}",
-                    )
-                    listing = self._merge_listing_frames(base_listing, industries)
-                    if listing is not None and not listing.empty:
-                        return listing
-                except CollectionFailure as exc:
-                    self._note_source_failure("load_listing", source, exc)
-                    if exc.failure_code == "provider_rate_limited":
-                        last_rate_limit = exc
-                        logger.warning(
-                            f"[VN] listing source {source} rate limited, trying fallback"
-                        )
-                    errors.append(f"Listing API ({source}): {exc}")
-                except Exception as exc:
-                    errors.append(f"Listing API ({source}): {exc}")
-        except Exception as exc:
-            errors.append(f"Listing import: {exc}")
-
-        try:
-            from vnstock import Quote
-
-            for source in self._get_source_order("load_listing"):
-                try:
-                    listing_client = Quote(symbol="VCI", source=source)
-                    base_listing = self._call_provider(
-                        lambda: listing_client.listing.all_symbols(),
-                        stage="load_listing",
-                        context_label=f"Quote.listing API ({source}) all_symbols",
-                        provider_label=f"vnstock:{source}",
-                    )
-                    industries = self._call_provider(
-                        lambda: listing_client.listing.symbols_by_industries(),
-                        stage="load_listing",
-                        context_label=f"Quote.listing API ({source}) symbols_by_industries",
-                        provider_label=f"vnstock:{source}",
-                    )
-                    listing = self._merge_listing_frames(base_listing, industries)
-                    if listing is not None and not listing.empty:
-                        return listing
-                except CollectionFailure as exc:
-                    self._note_source_failure("load_listing", source, exc)
-                    if exc.failure_code == "provider_rate_limited":
-                        last_rate_limit = exc
-                        logger.warning(
-                            f"[VN] quote listing source {source} rate limited, trying fallback"
-                        )
-                    errors.append(f"Quote.listing API ({source}): {exc}")
-                except Exception as exc:
-                    errors.append(f"Quote.listing API ({source}): {exc}")
-        except Exception as exc:
-            errors.append(f"Quote import: {exc}")
-
-        try:
-            from vnstock import Vnstock
-
-            stock = Vnstock()
-            legacy_listing = self._call_provider(
-                lambda: stock.stock().listing.all_symbols(),
-                stage="load_listing",
-                context_label="Legacy stock.listing API",
-                provider_label="vnstock:legacy",
-            )
-            listing = self._normalize_listing_frame(legacy_listing)
-            if listing is not None and not listing.empty:
-                return listing
-        except CollectionFailure as exc:
-            if exc.failure_code == "provider_rate_limited":
-                last_rate_limit = exc
-            errors.append(f"Legacy stock.listing API: {exc}")
-        except Exception as exc:
-            errors.append(f"Legacy stock.listing API: {exc}")
-
+        """Load industry metadata directly, retaining the cached-universe fallback."""
+        failures = []
+        for source in self._get_source_order("load_listing"):
+            try:
+                return vietnam_provider.fetch_listing(source, before_request=self._throttle_requests)
+            except CollectionFailure as exc:
+                self._note_source_failure("load_listing", source, exc)
+                failures.append(exc)
+                logger.warning(f"[VN] listing source {source} failed: {exc}")
         cached_listing = self._load_listing_from_cached_universe()
         if not cached_listing.empty:
             return cached_listing
-
-        if last_rate_limit is not None:
-            raise last_rate_limit
-
-        joined_errors = "; ".join(errors) if errors else "unknown error"
-        raise RuntimeError(f"베트남 종목 리스트 조회 실패: {joined_errors}")
+        raise next((f for f in failures if f.failure_code == "provider_rate_limited"), failures[-1])
 
     def _load_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """Load quote history across supported vnstock interfaces and sources."""
-        errors: list[str] = []
-        last_rate_limit: CollectionFailure | None = None
-
-        try:
-            from vnstock import Quote
-
-            for source in self._get_source_order("fetch_history"):
-                try:
-                    self._throttle_requests()
-                    quote = Quote(symbol=ticker, source=source)
-                    history = self._call_provider(
-                        lambda: quote.history(
-                            start=start_date,
-                            end=end_date,
-                            interval="1D",
-                        ),
-                        stage="fetch_history",
-                        context_label=f"Quote API ({source}) {ticker}",
-                        provider_label=f"vnstock:{source}",
-                    )
-                    if history is not None:
-                        return history
-                except CollectionFailure as exc:
-                    self._note_source_failure("fetch_history", source, exc)
-                    if exc.failure_code == "provider_rate_limited":
-                        last_rate_limit = exc
-                        logger.warning(
-                            f"[VN] history source {source} rate limited for {ticker}, "
-                            "trying fallback"
-                        )
-                    errors.append(f"Quote API ({source}): {exc}")
-                except Exception as exc:
-                    errors.append(f"Quote API ({source}): {exc}")
-        except Exception as exc:
-            errors.append(f"Quote import: {exc}")
-
-        try:
-            from vnstock import Vnstock
-
-            stock = Vnstock()
-            for source in self._get_source_order("fetch_history"):
-                try:
-                    self._throttle_requests()
-                    history = self._call_provider(
-                        lambda: stock.stock(symbol=ticker, source=source).quote.history(
-                            start=start_date,
-                            end=end_date,
-                        ),
-                        stage="fetch_history",
-                        context_label=f"Legacy quote API ({source}) {ticker}",
-                        provider_label=f"vnstock:legacy:{source}",
-                    )
-                    if history is not None:
-                        return history
-                except CollectionFailure as exc:
-                    self._note_source_failure("fetch_history", source, exc)
-                    if exc.failure_code == "provider_rate_limited":
-                        last_rate_limit = exc
-                        logger.warning(
-                            f"[VN] legacy history source {source} rate limited for {ticker}, "
-                            "trying fallback"
-                        )
-                    errors.append(f"Legacy quote API ({source}): {exc}")
-                except Exception as exc:
-                    errors.append(f"Legacy quote API ({source}): {exc}")
-        except Exception as exc:
-            errors.append(f"Legacy Vnstock import: {exc}")
-
-        if last_rate_limit is not None:
-            raise last_rate_limit
-
-        joined_errors = "; ".join(errors) if errors else "unknown error"
-        raise RuntimeError(f"{ticker} 가격 이력 조회 실패: {joined_errors}")
+        """Use bounded HTTP requests with the existing source penalties and pacing."""
+        failures = []
+        empty_history = None
+        for source in self._get_source_order("fetch_history"):
+            try:
+                history = vietnam_provider.fetch_history(source, ticker, start_date, end_date,
+                                                         before_request=self._throttle_requests)
+                if not history.empty:
+                    return history
+                empty_history = history
+            except CollectionFailure as exc:
+                self._note_source_failure("fetch_history", source, exc)
+                failures.append(exc)
+                logger.warning(f"[VN] history source {source} failed for {ticker}: {exc}")
+        # An explicit empty response is valid for a suspended/untraded ticker.
+        if empty_history is not None:
+            return empty_history
+        raise next((f for f in failures if f.failure_code == "provider_rate_limited"), failures[-1])
 
     def _normalize_listing_frame(self, listing: pd.DataFrame) -> pd.DataFrame:
-        """Normalize vnstock listing tables to the columns used by the collector."""
+        """Normalize provider listing tables to the columns used by the collector."""
         if listing is None or listing.empty:
             return pd.DataFrame()
 
@@ -839,7 +616,7 @@ class VietnamCollector(BaseCollector):
         base_listing: pd.DataFrame,
         industries: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Merge vnstock listing/name data with industry classifications."""
+        """Merge provider listing/name data with industry classifications."""
         base_listing = self._normalize_listing_frame(base_listing)
         industries = self._normalize_listing_frame(industries)
 
@@ -983,19 +760,7 @@ class VietnamCollector(BaseCollector):
         return filtered_listing
 
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
-        """HOSE + HNX 전종목 수집 via vnstock."""
-        try:
-            import vnstock  # noqa: F401
-        except ImportError:
-            raise CollectionFailure(
-                message="vnstock 미설치. pip install vnstock",
-                failure_code="provider_error",
-                failure_stage="import_provider",
-                provider="vnstock",
-                raw_error_excerpt="vnstock import failed",
-                run_mode=self.get_run_mode(),
-            )
-
+        """HOSE/HNX/UPCOM equities via public KBS/VCI HTTP APIs."""
         try:
             target_date = datetime.strptime(date, "%Y-%m-%d")
             start_date = (target_date - timedelta(days=14)).strftime("%Y-%m-%d")
@@ -1040,6 +805,7 @@ class VietnamCollector(BaseCollector):
             if start_index >= len(listing):
                 logger.info("[VN] checkpoint already reached the end, finalizing cached rows")
                 df = pd.DataFrame(rows)
+                self._validate_sector_coverage(df)
                 if used_dates:
                     self.effective_date = max(used_dates)
                 self._clear_checkpoint(date, self.get_run_mode())
@@ -1075,12 +841,10 @@ class VietnamCollector(BaseCollector):
                         weekly_return = self._compute_weekly_return(hist)
                         avg_volume_20d = self._compute_avg_volume(hist)
 
-                        cached_sector = info.get("sector")
-                        if cached_sector:
-                            sector = cached_sector
-                        else:
-                            industry = info.get("industry", "") or ""
-                            sector = VN_SECTOR_MAP.get(industry, "기타")
+                        sector = map_vietnam_sector(
+                            info.get("sector"), info.get("industry"),
+                            info.get("icb_name2"), info.get("icb_name1"),
+                        )
 
                         market_cap = info.get("market_cap")
                         if pd.isna(market_cap) or market_cap in ("", None):
@@ -1113,26 +877,22 @@ class VietnamCollector(BaseCollector):
                     time.sleep(0.1)
                     last_processed_ticker = ticker
                 except CollectionFailure as exc:
-                    if exc.failure_code == "provider_rate_limited":
-                        logger.warning(
-                            f"[VN] rate limit encountered, checkpoint and stop "
-                            f"(next_index={position}, saved_rows={len(rows)})"
-                        )
-                        self._save_checkpoint(
-                            requested_date=date,
-                            listing=listing,
-                            next_index=position,
-                            last_ticker=last_processed_ticker,
-                            rows=rows,
-                            used_dates=used_dates,
-                        )
-                        raise
-                    logger.debug(f"[VN] {ticker} 스킵: {exc}")
-                    last_processed_ticker = ticker
+                    logger.warning(
+                        f"[VN] {exc.failure_code}, checkpoint and stop "
+                        f"(next_index={position}, saved_rows={len(rows)})"
+                    )
+                    self._save_checkpoint(
+                        requested_date=date, listing=listing, next_index=position,
+                        last_ticker=last_processed_ticker, rows=rows, used_dates=used_dates,
+                    )
+                    raise
                 except Exception as exc:
-                    logger.debug(f"[VN] {ticker} 스킵: {exc}")
-                    last_processed_ticker = ticker
-                    continue
+                    failure = self._to_collection_failure(exc, default_stage="fetch_history")
+                    self._save_checkpoint(
+                        requested_date=date, listing=listing, next_index=position,
+                        last_ticker=last_processed_ticker, rows=rows, used_dates=used_dates,
+                    )
+                    raise failure from exc
 
                 processed_since_log += 1
                 next_index = position + 1
@@ -1159,6 +919,7 @@ class VietnamCollector(BaseCollector):
                     processed_since_log = 0
 
             df = pd.DataFrame(rows)
+            self._validate_sector_coverage(df)
             if used_dates:
                 self.effective_date = max(used_dates)
             self._clear_checkpoint(date, self.get_run_mode())
@@ -1170,6 +931,14 @@ class VietnamCollector(BaseCollector):
         except Exception as exc:
             logger.error(f"[VN] 수집 실패: {exc}", exc_info=True)
             raise
+
+    def _validate_sector_coverage(self, frame: pd.DataFrame) -> None:
+        if not frame.empty and not frame["sector"].isin(set(VN_SECTOR_MAP.values())).any():
+            raise CollectionFailure(
+                message="Vietnam prices have no mapped industry metadata",
+                failure_code="sector_metadata_missing", failure_stage="map_sectors",
+                provider="vietnam-http", run_mode=self.get_run_mode(),
+            )
 
     def _prepare_history(self, hist: pd.DataFrame, target_date: datetime) -> pd.DataFrame:
         """최근 구간에서 목표일 이전의 최신 거래일 데이터만 남긴다."""

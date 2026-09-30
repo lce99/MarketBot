@@ -74,7 +74,8 @@ def main():
     temporary = args.output.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(',', ':'), allow_nan=False) + '\n', encoding='utf-8')
     temporary.replace(args.output)
-    print(f"Exported {len(data['sectorHistory'])} sector observations; latest observation {data['latestDate']}")
+    stale = ",".join(market['code'] for market in data['markets'] if market['stale']) or "none"
+    print(f"Exported {len(data['sectorHistory'])} sector observations; latest observation {data['latestDate']}; stale/missing markets: {stale}")
 
 
 if __name__ == '__main__':
