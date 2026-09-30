@@ -49,63 +49,22 @@ class CollectorResilienceTests(unittest.TestCase):
         self.assertEqual(actual.iloc[0]["ticker"], "005930")
         self.assertEqual(actual.iloc[0]["sector"], "정보기술")
 
-    def test_vietnam_load_listing_supports_listing_api(self) -> None:
-        class FakeListing:
-            def __init__(self, source=None):
-                self.source = source
-
-            def all_symbols(self):
-                return pd.DataFrame(
-                    [
-                        {"symbol": "VCB", "organ_name": "Vietcombank"},
-                        {"symbol": "FPT", "organ_name": "FPT Corp"},
-                    ]
-                )
-
-            def symbols_by_industries(self):
-                return pd.DataFrame(
-                    [
-                        {"symbol": "VCB", "industry_name": "Banks"},
-                        {"symbol": "FPT", "industry_name": "Technology"},
-                    ]
-                )
-
-        class FakeVnstock:
-            def stock(self, symbol=None, source=None):
-                return types.SimpleNamespace(symbol=symbol, source=source)
-
-        fake_vnstock = types.ModuleType("vnstock")
-        fake_vnstock.Listing = FakeListing
-        fake_vnstock.Vnstock = FakeVnstock
-
-        with patch.dict(sys.modules, {"vnstock": fake_vnstock}):
-            collector = VietnamCollector()
-            listing = collector._load_listing()
-
+    def test_vietnam_load_listing_supports_direct_provider(self) -> None:
+        frame = pd.DataFrame([
+            {"ticker": "VCB", "name": "Vietcombank", "industry": "Banks"},
+            {"ticker": "FPT", "name": "FPT Corp", "industry": "Technology"},
+        ])
+        with patch("src.collectors.vietnam.vietnam_provider.fetch_listing", return_value=frame):
+            listing = VietnamCollector()._load_listing()
         self.assertEqual(list(listing["ticker"]), ["VCB", "FPT"])
         self.assertEqual(list(listing["name"]), ["Vietcombank", "FPT Corp"])
         self.assertEqual(list(listing["industry"]), ["Banks", "Technology"])
 
     def test_vietnam_load_listing_falls_back_to_cached_universe(self) -> None:
-        class BrokenListing:
-            def __init__(self, source=None):
-                raise ValueError(f"listing unavailable: {source}")
-
-        class BrokenQuote:
-            def __init__(self, symbol=None, source=None):
-                raise ValueError(f"quote unavailable: {symbol}/{source}")
-
-        class BrokenVnstock:
-            def stock(self, symbol=None, source=None):
-                raise AttributeError("legacy listing unavailable")
-
-        fake_vnstock = types.ModuleType("vnstock")
-        fake_vnstock.Listing = BrokenListing
-        fake_vnstock.Quote = BrokenQuote
-        fake_vnstock.Vnstock = BrokenVnstock
+        failure = CollectionFailure("listing unavailable", "provider_error", "load_listing")
         fake_conn = types.SimpleNamespace(close=lambda: None)
 
-        with patch.dict(sys.modules, {"vnstock": fake_vnstock}):
+        with patch("src.collectors.vietnam.vietnam_provider.fetch_listing", side_effect=failure):
             with patch("src.collectors.vietnam.get_connection", return_value=fake_conn):
                 with patch(
                     "src.collectors.vietnam.get_instrument_universe",
@@ -386,19 +345,14 @@ class CollectorResilienceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.failure_code, "missing_credentials")
         self.assertEqual(ctx.exception.failure_stage, "preflight")
 
-    def test_vietnam_call_provider_classifies_rate_limit_abort(self) -> None:
+    def test_vietnam_listing_preserves_rate_limit_failure_when_fallbacks_fail(self) -> None:
         collector = VietnamCollector()
-
-        def provider_call():
-            print("Rate limit exceeded. Wait to retry.")
-            raise SystemExit(1)
-
-        with self.assertRaises(CollectionFailure) as ctx:
-            collector._call_provider(
-                provider_call,
-                stage="fetch_history",
-                context_label="Quote API (KBS) VCB",
-            )
-
+        failure = CollectionFailure("HTTP 429", "provider_rate_limited", "load_listing",
+                                    provider="vietnam-http:KBS")
+        with patch("src.collectors.vietnam.vietnam_provider.fetch_listing", side_effect=failure) as fetch:
+            with patch.object(collector, "_load_listing_from_cached_universe", return_value=pd.DataFrame()):
+                with self.assertRaises(CollectionFailure) as ctx:
+                    collector._load_listing()
+        self.assertEqual(fetch.call_count, 2)
         self.assertEqual(ctx.exception.failure_code, "provider_rate_limited")
-        self.assertEqual(ctx.exception.failure_stage, "fetch_history")
+        self.assertEqual(ctx.exception.failure_stage, "load_listing")
