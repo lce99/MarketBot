@@ -206,7 +206,8 @@ def generate_flow_signals(date: str | None = None) -> list[dict]:
         candidates = [
             row
             for row in pair_rows
-            if row["lag"] >= 1
+            if row["leader"] in ACTIVE_MARKETS and row["follower"] in ACTIVE_MARKETS
+            and row["lag"] >= 1
             and row["correlation"] is not None
             and row["correlation"] >= LEADLAG_MIN_CORRELATION
             and (row["n_obs"] or 0) >= LEADLAG_MIN_OVERLAP
@@ -267,6 +268,8 @@ def verify_flow_signals() -> dict:
         pending = get_flow_signals(conn, status="pending")
         today = datetime.utcnow().date()
         for signal in pending:
+            if signal["leader"] not in ACTIVE_MARKETS or signal["follower"] not in ACTIVE_MARKETS:
+                continue
             target_offset = max(int(signal.get("lag") or 1) - 1, 0)
             outcome = conn.execute(
                 """

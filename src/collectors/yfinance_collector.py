@@ -154,6 +154,9 @@ class YfinanceCollector(BaseCollector):
         self._tickers = list(dict.fromkeys(tickers))
         self._sector_cache: dict[str, str] = {}
 
+    def get_provider_name(self) -> str:
+        return self.metadata_source
+
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
         """인덱스 구성종목의 가격 데이터를 yfinance로 배치 수집."""
         tickers = self._tickers

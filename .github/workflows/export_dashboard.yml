@@ -2,18 +2,31 @@ name: Export Investment Office Dashboard
 
 on:
   workflow_dispatch:
+    inputs:
+      refresh_analytics:
+        description: 'Refresh local analytics only; never prepare or send reports'
+        type: boolean
+        default: false
+      correct_recovery_provenance:
+        description: 'Correct the three audited recovery provider labels'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
       - scripts/export_dashboard.py
       - src/markets.py
+      - scripts/refresh_dashboard_analytics.py
+      - src/analyzer.py
+      - src/leadlag.py
+      - src/collectors/yfinance_collector.py
       - .github/workflows/export_dashboard.yml
   workflow_run:
     workflows: [Collect Market Data, Send Daily Report]
     types: [completed]
     branches: [main]
 
-# Share the writers' lock. Never push or replace the database from this job.
+# Share the collection writers' lock; refresh summary analytics without raw stocks.
 concurrency:
   group: marketbot-db-commit
   cancel-in-progress: false
@@ -32,6 +45,24 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+      - name: Install local analysis dependency
+        if: (github.event_name == 'workflow_dispatch' && inputs.refresh_analytics) || (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Collect Market Data' && github.event.workflow_run.conclusion == 'success')
+        run: pip install 'pandas>=2.2'
+      - name: Refresh dashboard analytics without reports or notifications
+        if: (github.event_name == 'workflow_dispatch' && inputs.refresh_analytics) || (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Collect Market Data' && github.event.workflow_run.conclusion == 'success')
+        env:
+          CORRECT_PROVENANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.correct_recovery_provenance }}
+        run: |
+          args=()
+          if [ "$CORRECT_PROVENANCE" = "true" ]; then args+=(--provenance-corrections docs/recovery-provenance.json); fi
+          python -m scripts.refresh_dashboard_analytics "${args[@]}"
+      - name: Commit refreshed summary analytics
+        if: (github.event_name == 'workflow_dispatch' && inputs.refresh_analytics) || (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Collect Market Data' && github.event.workflow_run.conclusion == 'success')
+        run: |
+          git config user.name "MarketBot"
+          git config user.email "marketbot@github.com"
+          git add data/marketbot.db
+          git diff --cached --quiet || git commit -m "data: refresh dashboard analytics"
       - name: Export public summary observations without model APIs
         run: python scripts/export_dashboard.py --source-commit "$(git rev-parse HEAD)"
       - name: Commit public dashboard snapshot
