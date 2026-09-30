@@ -150,7 +150,8 @@ class YfinanceCollector(BaseCollector):
 
     def __init__(self, country_code: str, tickers: list[str]):
         self.country_code = country_code
-        self._tickers = tickers
+        # Repeated index constituents must contribute only once to sector totals.
+        self._tickers = list(dict.fromkeys(tickers))
         self._sector_cache: dict[str, str] = {}
 
     def fetch_all_stocks(self, date: str) -> pd.DataFrame:
